@@ -10,7 +10,7 @@ if __name__ == '__main__':
     #Connect to broker
     ib.connect('127.0.0.1', 7497, clientId=1)
 
-    stock = Stock('APPL', 'SMART', 'USD')
+    stock = Stock('AAPL', 'SMART', 'USD')
 
     bars = ib.reqHistoricalData(
         stock, endDateTime= '' , durationStr='3000 S',
