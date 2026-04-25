@@ -8,7 +8,7 @@ if __name__ == '__main__':
     chart = Chart()
 
     #Connect to broker
-    ib.connect('127.0.0.1', 7497, clientId=1)
+    ib.connect('127.0.0.1', 4001, clientId=1, timeout=30)
 
     stock = Stock('AAPL', 'SMART', 'USD')
 
@@ -19,7 +19,7 @@ if __name__ == '__main__':
 
     df = util.df(bars)
 
-    chart = Chart(volume_emabled = False)
+
     chart.set(df)
     chart.show()
 
