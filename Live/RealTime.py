@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import random
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
 from ib_async import IB, Stock, Ticker, util
 
-from chart_utils import apply_tick_to_bars, normalize_history_df
+from chart_utils import apply_tick_to_bars, normalize_history_df, resample_bars
 
 
 TIMEFRAME_MAP: Dict[str, Tuple[str, str]] = {
@@ -51,6 +53,34 @@ class RealTimeIB:
         self._runner_thread: Optional[threading.Thread] = None
         self._ready = threading.Event()
         self._startup_error: Optional[str] = None
+        self._requests: queue.Queue[str] = queue.Queue()
+
+        base_dir = Path(__file__).resolve().parent
+        self.nasdaq_file = base_dir / "nasdaq_tickers_simple.txt"
+        self.nasdaq_symbols = self._load_nasdaq_symbols(self.nasdaq_file)
+
+        print(f"[NASDAQ FILE] {self.nasdaq_file}", flush=True)
+        print(f"[NASDAQ COUNT] {len(self.nasdaq_symbols)}", flush=True)
+        print(f"[HAS MSFT] {'MSFT' in self.nasdaq_symbols}", flush=True)
+
+    def _load_nasdaq_symbols(self, file_path: Path) -> set[str]:
+        if not file_path.exists():
+            print(f"[WARN] NASDAQ file not found: {file_path}", flush=True)
+            return set()
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            return {
+                line.strip().upper()
+                for line in f
+                if line.strip()
+            }
+
+    def is_valid_nasdaq_symbol(self, symbol: str) -> bool:
+        symbol = self._sanitize_symbol(symbol)
+        return symbol in self.nasdaq_symbols
+
+    def get_symbol_options(self) -> list[str]:
+        return sorted(self.nasdaq_symbols)
 
     def connect(self) -> None:
         if not self.ib.isConnected():
@@ -73,7 +103,11 @@ class RealTimeIB:
                 self.connect()
                 self.ensure_symbol_ready(symbol, timeframe)
                 self._ready.set()
-                self.ib.run()
+
+                while True:
+                    self._process_requests()
+                    self.ib.sleep(0.1)
+
             except Exception as exc:
                 self._startup_error = str(exc)
                 self._ready.set()
@@ -82,11 +116,31 @@ class RealTimeIB:
         self._runner_thread = threading.Thread(target=_run, daemon=True)
         self._runner_thread.start()
         self._ready.wait(timeout=15)
+
         if self._startup_error:
             raise RuntimeError(self._startup_error)
 
+    def request_symbol(self, symbol: str) -> None:
+        symbol = self._sanitize_symbol(symbol)
+        self._requests.put(symbol)
+
+    def _process_requests(self) -> None:
+        while not self._requests.empty():
+            symbol = self._requests.get()
+
+            try:
+                print(f"[REQUEST] loading {symbol}", flush=True)
+                self.ensure_symbol_ready(symbol, "1 min")
+                print(f"[REQUEST] loaded {symbol}", flush=True)
+            except Exception as exc:
+                print(f"[REQUEST ERROR] {symbol}: {exc}", flush=True)
+
     def get_contract(self, symbol: str) -> Stock:
         symbol = self._sanitize_symbol(symbol)
+
+        if not self.is_valid_nasdaq_symbol(symbol):
+            raise ValueError(f"{symbol} is not in NASDAQ symbol list")
+
         with self._lock:
             if symbol in self._contracts:
                 return self._contracts[symbol]
@@ -134,16 +188,16 @@ class RealTimeIB:
         contract = self.get_contract(symbol)
 
         with self._lock:
-            key = (symbol, timeframe)
+            key = (symbol, "1 min")
             has_state = key in self._states and not self._states[key].bars.empty
             if symbol in self._tickers:
                 return
 
         if not has_state:
-            self.load_history(symbol, timeframe)
+            self.load_history(symbol, "1 min")
 
         ticker = self.ib.reqMktData(contract, "", False, False)
-        ticker.updateEvent += self._make_tick_handler(symbol, timeframe)
+        ticker.updateEvent += self._make_tick_handler(symbol, "1 min")
 
         with self._lock:
             self._tickers[symbol] = ticker
@@ -181,18 +235,22 @@ class RealTimeIB:
 
     def get_snapshot(self, symbol: str, timeframe: str) -> SymbolState:
         symbol = self._sanitize_symbol(symbol)
-        key = (symbol, timeframe)
+        key = (symbol, "1 min")
 
         with self._lock:
             state = self._states.get(key)
 
         if state is None:
-            raise ValueError(f"No loaded state for {symbol} {timeframe}")
+            raise ValueError(f"No loaded state for {symbol} 1 min")
+
+        bars = state.bars.copy()
+        if timeframe != "1 min":
+            bars = resample_bars(bars, timeframe)
 
         return SymbolState(
             symbol=state.symbol,
-            timeframe=state.timeframe,
-            bars=state.bars.copy(),
+            timeframe=timeframe,
+            bars=bars,
             bid=state.bid,
             ask=state.ask,
             last=state.last,
@@ -202,8 +260,8 @@ class RealTimeIB:
         )
 
     def ensure_symbol_ready(self, symbol: str, timeframe: str) -> None:
-        self.load_history(symbol, timeframe)
-        self.subscribe_live(symbol, timeframe)
+        self.load_history(symbol, "1 min")
+        self.subscribe_live(symbol, "1 min")
 
     @staticmethod
     def _sanitize_symbol(symbol: str) -> str:

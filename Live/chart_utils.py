@@ -36,7 +36,12 @@ def floor_to_minute(ts: datetime) -> datetime:
     return ts.replace(second=0, microsecond=0)
 
 
-def apply_tick_to_bars(df: pd.DataFrame, price: float, size: float, tick_time: Optional[datetime] = None) -> pd.DataFrame:
+def apply_tick_to_bars(
+    df: pd.DataFrame,
+    price: float,
+    size: float,
+    tick_time: Optional[datetime] = None
+) -> pd.DataFrame:
     if tick_time is None:
         tick_time = datetime.now()
 
@@ -75,6 +80,38 @@ def apply_tick_to_bars(df: pd.DataFrame, price: float, size: float, tick_time: O
         out = pd.concat([out, new_row], ignore_index=True)
 
     return out
+
+
+def resample_bars(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+    if timeframe == "1 min":
+        return df.copy()
+
+    rule_map = {
+        "5 mins": "5min",
+        "15 mins": "15min",
+        "1 hour": "1h",
+        "1 day": "1D",
+    }
+
+    if timeframe not in rule_map:
+        raise ValueError(f"Unsupported timeframe for resample: {timeframe}")
+
+    out = df.copy()
+    out["time"] = pd.to_datetime(out["time"])
+    out = out.set_index("time")
+
+    resampled = out.resample(rule_map[timeframe]).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    })
+
+    return resampled.dropna(subset=["open", "high", "low", "close"]).reset_index()
 
 
 def create_candlestick_figure(df: pd.DataFrame, symbol: str, timeframe: str) -> go.Figure:
@@ -137,6 +174,9 @@ def create_candlestick_figure(df: pd.DataFrame, symbol: str, timeframe: str) -> 
             "font": {"color": title_color},
         },
         template="plotly_dark",
+        paper_bgcolor="#111827",
+        plot_bgcolor="#111827",
+        font={"family": "Arial, Helvetica, sans-serif", "size": 13, "color": "#e5e7eb"},
         xaxis_rangeslider_visible=False,
         height=820,
         margin=dict(l=40, r=30, t=70, b=40),
