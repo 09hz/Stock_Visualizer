@@ -13,119 +13,106 @@ DEFAULT_TIMEFRAME = "1 min"
 rt = RealTimeIB(host="127.0.0.1", port=4001)
 rt.start(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
 
-SYMBOL_OPTIONS = [
-    {"label": symbol, "value": symbol}
-    for symbol in rt.get_symbol_options()
-]
+SYMBOL_OPTIONS = rt.get_symbol_options()
 
 app = Dash(__name__)
-app.title = "RealTime IBKR Viewer (ib_async)"
+app.title = "Stock Visualizer"
 
 app.layout = html.Div(
-    [
-        html.Header(
-            [
-                html.H1("RealTime IBKR Viewer (ib_async)"),
-                html.Div(
-                    "Live market data dashboard with Plotly + Dash",
-                    className="subtitle"
-                ),
-            ]
+    className="app-shell",
+    children=[
+        html.Div(
+            className="sidebar",
+            children=[
+                html.Div("SV", className="logo"),
+                html.Div("Dashboard", className="nav-item active"),
+                html.Div("Watch", className="nav-item"),
+                html.Div("Quotes", className="nav-item"),
+                html.Div("Charts", className="nav-item"),
+            ],
         ),
-
-        html.Main(
-            [
-                html.Section(
-                    [
-                        html.H2("Controls"),
-                        html.Div(
-                            [
-                                html.Div(
-                                    [
-                                        html.Label("Symbol"),
-                                        dcc.Dropdown(
-                                            id="symbol-dropdown",
-                                            options=SYMBOL_OPTIONS,
-                                            value=DEFAULT_SYMBOL,
-                                            placeholder="Search NASDAQ ticker...",
-                                            searchable=True,
-                                            clearable=False,
-                                            style={"width": "260px", "color": "black"},
-                                        ),
-                                    ],
-                                    style={"display": "inline-block", "marginRight": "16px"}
-                                ),
-                                html.Div(
-                                    [
-                                        html.Label("Timeframe"),
-                                        dcc.Dropdown(
-                                            id="timeframe-dropdown",
-                                            options=[
-                                                {"label": key, "value": key}
-                                                for key in TIMEFRAME_MAP.keys()
-                                            ],
-                                            value=DEFAULT_TIMEFRAME,
-                                            clearable=False,
-                                            style={"width": "220px", "display": "inline-block", "color": "black"},
-                                        ),
-                                    ],
-                                    style={"display": "inline-block", "marginRight": "16px"}
-                                ),
-                                html.Div(
-                                    [
-                                        html.Label(" "),
-                                        html.Button(
-                                            "Load Symbol",
-                                            id="load-symbol-btn",
-                                            n_clicks=0,
-                                            style={
-                                                "height": "38px",
-                                                "padding": "0 16px",
-                                                "cursor": "pointer"
-                                            }
-                                        ),
-                                    ],
-                                    style={"display": "inline-block"}
-                                ),
-                            ]
-                        ),
-                        html.Div(
-                            id="load-status-text",
-                            style={"marginTop": "10px", "color": "#38bdf8"}
-                        ),
+        html.Div(
+            className="main-panel",
+            children=[
+                html.Div(
+                    className="topbar",
+                    children=[
+                        html.Div(id="pair-title", className="pair-title"),
+                        html.Div(id="quote-strip", className="quote-strip"),
                     ],
-                    className="about",
                 ),
-
-                html.Section(
-                    [
-                        html.H2("Live Quote"),
-                        html.Div(id="quote-strip"),
-                    ],
-                    className="about",
-                ),
-
-                html.Section(
-                    [
-                        html.H2("Live Chart"),
+                html.Div(
+                    className="controls-row",
+                    children=[
                         html.Div(
-                            [
-                                dcc.Graph(id="live-chart"),
+                            className="control-box control-symbol",
+                            children=[
+                                html.Label("Symbol / Company"),
+                                dcc.Dropdown(
+                                    id="symbol-dropdown",
+                                    options=SYMBOL_OPTIONS,
+                                    value=DEFAULT_SYMBOL,
+                                    placeholder="Search ticker or company...",
+                                    searchable=True,
+                                    clearable=False,
+                                    style={"color": "black"},
+                                ),
                             ],
-                            className="project-card",
+                        ),
+                        html.Div(
+                            className="control-box control-timeframe",
+                            children=[
+                                html.Label("Timeframe"),
+                                dcc.Dropdown(
+                                    id="timeframe-dropdown",
+                                    options=[
+                                        {"label": key, "value": key}
+                                        for key in TIMEFRAME_MAP.keys()
+                                    ],
+                                    value=DEFAULT_TIMEFRAME,
+                                    clearable=False,
+                                    style={"color": "black"},
+                                ),
+                            ],
                         ),
                     ],
-                    className="projects",
                 ),
-
+                html.Div(id="load-status-text", className="status-text"),
+                html.Div(
+                    className="chart-card",
+                    children=[
+                        dcc.Graph(
+                            id="live-chart",
+                            className="chart-graph",
+                            config={
+                                "displaylogo": False,
+                                "modeBarButtonsToRemove": [
+                                    "lasso2d",
+                                    "select2d",
+                                    "autoScale2d",
+                                ],
+                            },
+                        ),
+                    ],
+                ),
                 dcc.Interval(id="ui-interval", interval=250, n_intervals=0),
                 dcc.Store(id="zoom-state", data={}),
                 dcc.Store(id="active-symbol", data=DEFAULT_SYMBOL),
                 dcc.Store(id="load-status", data="Ready"),
-            ]
+            ],
         ),
-    ]
+    ],
 )
+
+
+@app.callback(
+    Output("pair-title", "children"),
+    Input("active-symbol", "data"),
+)
+def update_pair_title(symbol):
+    symbol = symbol or DEFAULT_SYMBOL
+    company = rt.get_company_name(symbol)
+    return f"{symbol} / {company}"
 
 
 @app.callback(
@@ -143,15 +130,11 @@ def capture_zoom(relayout_data, current_state):
 @app.callback(
     Output("active-symbol", "data"),
     Output("load-status", "data"),
-    Input("load-symbol-btn", "n_clicks"),
-    State("symbol-dropdown", "value"),
+    Input("symbol-dropdown", "value"),
     prevent_initial_call=True,
 )
-def load_new_symbol(n_clicks, symbol):
-    print(f"[LOAD SYMBOL] n_clicks={n_clicks} symbol={symbol}", flush=True)
-
-    if not n_clicks:
-        return no_update, no_update
+def auto_load_symbol(symbol):
+    print(f"[SYMBOL CHANGE] symbol={symbol}", flush=True)
 
     if not symbol:
         return no_update, "No symbol selected"
@@ -159,10 +142,8 @@ def load_new_symbol(n_clicks, symbol):
     try:
         symbol = rt._sanitize_symbol(symbol)
         rt.request_symbol(symbol)
-        print(f"[ACTIVE SYMBOL SET] {symbol}", flush=True)
         return symbol, f"Requested {symbol}"
     except Exception as exc:
-        print(f"[LOAD ERROR] {exc}", flush=True)
         return no_update, f"Error: {exc}"
 
 
@@ -186,8 +167,7 @@ def render_live_chart(_n, active_symbol, timeframe, zoom_state):
     try:
         symbol = active_symbol or DEFAULT_SYMBOL
         timeframe = timeframe or DEFAULT_TIMEFRAME
-
-        print(f"[RENDER] symbol={symbol} timeframe={timeframe}", flush=True)
+        company_name = rt.get_company_name(symbol)
 
         snap = rt.get_snapshot(symbol, timeframe)
         fig = create_candlestick_figure(snap.bars, symbol, timeframe)
@@ -199,7 +179,8 @@ def render_live_chart(_n, active_symbol, timeframe, zoom_state):
         updated = snap.updated_at.strftime("%H:%M:%S") if snap.updated_at else "--:--:--"
 
         quote_text = (
-            f"Symbol: {symbol} | Last: {last} | Bid: {bid} | Ask: {ask} | "
+            f"{symbol} ({company_name}) | "
+            f"Last: {last} | Bid: {bid} | Ask: {ask} | "
             f"Last Size: {size} | Ticks: {snap.tick_count} | Updated: {updated}"
         )
 
@@ -207,22 +188,26 @@ def render_live_chart(_n, active_symbol, timeframe, zoom_state):
             if "xaxis.range[0]" in zoom_state and "xaxis.range[1]" in zoom_state:
                 fig.update_xaxes(
                     range=[zoom_state["xaxis.range[0]"], zoom_state["xaxis.range[1]"]],
-                    row=1, col=1
+                    row=1,
+                    col=1,
                 )
             if "yaxis.range[0]" in zoom_state and "yaxis.range[1]" in zoom_state:
                 fig.update_yaxes(
                     range=[zoom_state["yaxis.range[0]"], zoom_state["yaxis.range[1]"]],
-                    row=1, col=1
+                    row=1,
+                    col=1,
                 )
 
         return quote_text, fig
 
     except Exception as exc:
-        print(f"[RENDER ERROR] {exc}", flush=True)
         fig = go.Figure()
         fig.update_layout(
             title=f"Loading {active_symbol or DEFAULT_SYMBOL}...",
-            template="plotly_dark"
+            template="plotly_dark",
+            paper_bgcolor="#0d1b4f",
+            plot_bgcolor="#0d1b4f",
+            font={"color": "#e8f1ff"},
         )
         return f"Loading {active_symbol or DEFAULT_SYMBOL}...", fig
 

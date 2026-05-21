@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import queue
 import random
 import threading
@@ -40,12 +41,18 @@ class SymbolState:
 
 
 class RealTimeIB:
-    def __init__(self, host: str = "127.0.0.1", port: int = 4001, client_id: Optional[int] = None):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 4001,
+        client_id: Optional[int] = None,
+    ):
         self.host = host
         self.port = port
         self.client_id = client_id if client_id is not None else random.randint(1000, 999999)
 
         self.ib = IB()
+
         self._contracts: Dict[str, Stock] = {}
         self._tickers: Dict[str, Ticker] = {}
         self._states: Dict[Tuple[str, str], SymbolState] = {}
@@ -56,12 +63,20 @@ class RealTimeIB:
         self._requests: queue.Queue[str] = queue.Queue()
 
         base_dir = Path(__file__).resolve().parent
+
         self.nasdaq_file = base_dir / "nasdaq_tickers_simple.txt"
         self.nasdaq_symbols = self._load_nasdaq_symbols(self.nasdaq_file)
+
+        self.company_file = base_dir / "nasdaq_symbol_names_filled.csv"
+        self.company_names = self._load_company_names(self.company_file)
 
         print(f"[NASDAQ FILE] {self.nasdaq_file}", flush=True)
         print(f"[NASDAQ COUNT] {len(self.nasdaq_symbols)}", flush=True)
         print(f"[HAS MSFT] {'MSFT' in self.nasdaq_symbols}", flush=True)
+
+        print(f"[COMPANY FILE] {self.company_file}", flush=True)
+        print(f"[COMPANY COUNT] {len(self.company_names)}", flush=True)
+        print(f"[MSFT NAME] {self.company_names.get('MSFT', 'MISSING')}", flush=True)
 
     def _load_nasdaq_symbols(self, file_path: Path) -> set[str]:
         if not file_path.exists():
@@ -75,12 +90,43 @@ class RealTimeIB:
                 if line.strip()
             }
 
+    def _load_company_names(self, file_path: Path) -> dict[str, str]:
+        if not file_path.exists():
+            print(f"[WARN] Company file not found: {file_path}", flush=True)
+            return {}
+
+        company_map: dict[str, str] = {}
+
+        with open(file_path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                symbol = (row.get("symbol") or "").strip().upper()
+                name = (row.get("name") or "").strip()
+                if symbol:
+                    company_map[symbol] = name
+
+        return company_map
+
     def is_valid_nasdaq_symbol(self, symbol: str) -> bool:
         symbol = self._sanitize_symbol(symbol)
         return symbol in self.nasdaq_symbols
 
-    def get_symbol_options(self) -> list[str]:
-        return sorted(self.nasdaq_symbols)
+    def get_company_name(self, symbol: str) -> str:
+        symbol = self._sanitize_symbol(symbol)
+        return self.company_names.get(symbol) or symbol
+
+    def get_symbol_options(self) -> list[dict[str, str]]:
+        options: list[dict[str, str]] = []
+
+        for symbol in sorted(self.nasdaq_symbols):
+            company = self.company_names.get(symbol, "")
+            label = f"{symbol} - {company}" if company else symbol
+            options.append({
+                "label": label,
+                "value": symbol,
+            })
+
+        return options
 
     def connect(self) -> None:
         if not self.ib.isConnected():
@@ -205,6 +251,7 @@ class RealTimeIB:
     def _make_tick_handler(self, symbol: str, timeframe: str):
         def on_tick(ticker: Ticker, *args):
             price_raw = ticker.last if ticker.last is not None else ticker.marketPrice()
+
             if price_raw is None or pd.isna(price_raw):
                 return
 
@@ -260,12 +307,16 @@ class RealTimeIB:
         )
 
     def ensure_symbol_ready(self, symbol: str, timeframe: str) -> None:
+        # Keep live state in 1-minute bars only.
         self.load_history(symbol, "1 min")
         self.subscribe_live(symbol, "1 min")
 
     @staticmethod
     def _sanitize_symbol(symbol: str) -> str:
-        cleaned = "".join(ch for ch in symbol.upper().strip() if ch.isalnum() or ch in {".", "-"})
+        cleaned = "".join(
+            ch for ch in symbol.upper().strip()
+            if ch.isalnum() or ch in {".", "-"}
+        )
         if not cleaned:
             raise ValueError("Invalid symbol.")
         return cleaned
