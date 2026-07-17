@@ -566,7 +566,7 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 options=symbol_options,
                                 value=default_symbol,
                                 placeholder="Search ticker, symbol, or company...",
-                                clearable=True,
+                                clearable=False,
                                 searchable=True,
                                 className="black-dropdown",
                             ),
@@ -801,6 +801,11 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                     ),
                 ],
             ),
+            html.Div(id="chart-metrics-strip", className="metrics-strip"),
+            html.Div(
+                className="range-row chart-control-row",
+                children=make_chart_control_buttons("charts"),
+            ),
             html.Div(id="charts-status", className="status-text"),
             html.Div(
                 className="chart-card",
@@ -812,5 +817,6 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                     ),
                 ],
             ),
+            html.Div(id="charts-stats-grid", className="stats-grid"),
         ],
     )

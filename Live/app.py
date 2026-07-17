@@ -182,7 +182,16 @@ app.layout = html.Div(
                 "y_range": None,
             },
         ),
-
+        dcc.Store(
+            id="charts-chart-state",
+            data={
+                "mode": "live",
+                "range_key": "1D",
+                "x_range": None,
+                "y_range": None,
+            },
+        ),
+ 
         dcc.Store(id="paper-trade-trigger", data=0),
         dcc.Store(
             id="strategy-script-store",
