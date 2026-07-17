@@ -116,8 +116,8 @@ def build_dashboard_tab(symbol_options, timeframe_map, default_symbol, default_t
                     ),
                 ],
             ),
-            html.Div(id="load-status-text", className="status-text"),
             html.Div(id="dashboard-metrics-strip", className="metrics-strip"),
+            html.Div(id="load-status-text", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("dashboard"),
@@ -688,8 +688,8 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                     ),
                 ],
             ),
-            html.Div(id="watch-status", className="status-text"),
             html.Div(id="watch-metrics-strip", className="metrics-strip"),
+            html.Div(id="watch-status", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("watch"),
@@ -715,46 +715,6 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
             _build_watch_workspace_tabs(),
         ],
     )
-
-
-def build_quotes_tab(symbol_options, default_symbol):
-    return html.Div(
-        className="tab-panel quotes-tab-panel",
-        children=[
-            html.Div(
-                className="controls-row",
-                children=[
-                    html.Div(
-                        className="control-box control-symbol",
-                        children=[
-                            html.Label("Instrument"),
-                            dcc.Dropdown(
-                                id="quotes-symbol-dropdown",
-                                options=symbol_options,
-                                value=default_symbol,
-                                placeholder="Search ticker, symbol, or company...",
-                                searchable=True,
-                                clearable=False,
-                                className="black-dropdown",
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            html.Div(id="quotes-status", className="status-text"),
-            html.Div(
-                className="chart-card",
-                children=[
-                    html.Div(
-                        id="quotes-panel",
-                        className="quote-strip",
-                        children="Ready for quotes",
-                    ),
-                ],
-            ),
-        ],
-    )
-
 
 def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_timeframe):
     return html.Div(
@@ -802,11 +762,11 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                 ],
             ),
             html.Div(id="chart-metrics-strip", className="metrics-strip"),
+            html.Div(id="charts-status", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("charts"),
             ),
-            html.Div(id="charts-status", className="status-text"),
             html.Div(
                 className="chart-card",
                 children=[

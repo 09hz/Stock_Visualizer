@@ -408,8 +408,6 @@ control-box:hover {
     border: none;
 }
 
-
-
 .rc-slider {
     margin: 16px 0;
 }
@@ -452,7 +450,7 @@ control-box:hover {
 }
 
 .rc-slider-mark-text {
-    color: #4a5568 !important;
+    color: #ffffff !important;
     font-size: 11px !important;
 }
 

@@ -25,7 +25,6 @@ from services.paper_cache import PaperStateCache
 from ui.tabs_ui import (
     build_dashboard_tab,
     build_watch_tab,
-    build_quotes_tab,
     build_charts_tab,
 )
 
@@ -115,18 +114,6 @@ app.layout = html.Div(
                     ],
                 ),
                 dcc.Tab(
-                    label="Quotes",
-                    value="quotes",
-                    className="main-tab",
-                    selected_className="main-tab-selected",
-                    children=[
-                        build_quotes_tab(
-                            symbol_options=SYMBOL_OPTIONS,
-                            default_symbol=DEFAULT_SYMBOL,
-                        )
-                    ],
-                ),
-                dcc.Tab(
                     label="Charts",
                     value="charts",
                     className="main-tab",
@@ -153,6 +140,9 @@ app.layout = html.Div(
         # Replay render trigger. Buttons/clock bump this store so the Watch chart
         # redraws without the slider callback fighting the clock.
         dcc.Store(id="replay-render-trigger", data=0),
+
+        # Dedicated quotes heartbeat for independent updates while on Quotes tab.
+        dcc.Interval(id="quotes-interval", interval=UI_INTERVAL_MS, n_intervals=0),
 
         dcc.Store(
             id="watch-load-request",
@@ -204,6 +194,7 @@ app.layout = html.Div(
         dcc.Store(id="zoom-state", data={}),
         dcc.Store(id="active-symbol", data=DEFAULT_SYMBOL),
         dcc.Store(id="load-status", data="Ready"),
+        dcc.Store(id="quotes-list", data=[]),
         dcc.Store(
             id="dashboard-state",
             data={

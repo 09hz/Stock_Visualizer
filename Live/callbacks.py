@@ -399,6 +399,7 @@ def register_callbacks(
         Input("main-tabs", "value"),
         Input("watch-symbol-dropdown", "value"),
         Input("symbol-dropdown", "value"),
+        Input("charts-symbol-dropdown", "value"),
         State("watch-state", "data"),
         State("dashboard-state", "data"),
     )
@@ -407,21 +408,24 @@ def register_callbacks(
             active_tab,
             watch_symbol,
             dashboard_symbol_dropdown,
+            charts_symbol_dropdown,
             watch_state,
             dashboard_state,
     ):
         if active_tab == "watch":
             symbol = (
-                    watch_symbol
-                    or (watch_state or {}).get("symbol")
-                    or DEFAULT_SYMBOL
+                watch_symbol
+                or (watch_state or {}).get("symbol")
+                or DEFAULT_SYMBOL
             )
+        elif active_tab == "charts":
+            symbol = charts_symbol_dropdown or DEFAULT_SYMBOL
         else:
             symbol = (
-                    active_symbol
-                    or dashboard_symbol_dropdown
-                    or (dashboard_state or {}).get("symbol")
-                    or DEFAULT_SYMBOL
+                active_symbol
+                or dashboard_symbol_dropdown
+                or (dashboard_state or {}).get("symbol")
+                or DEFAULT_SYMBOL
             )
 
         symbol = str(symbol).upper().strip()
@@ -3039,48 +3043,6 @@ def register_callbacks(
             )
 
         return fig
-
-    # ------------------------------------------------------------
-    # Quotes
-    # ------------------------------------------------------------
-    @app.callback(
-        Output("quotes-status", "children"),
-        Output("quotes-panel", "children"),
-        Input("ui-interval", "n_intervals"),
-        Input("quotes-symbol-dropdown", "value"),
-        State("main-tabs", "value"),
-        prevent_initial_call=False,
-    )
-    def render_quotes_tab(_n, symbol, active_tab):
-        if active_tab != "quotes":
-            return no_update, no_update
-
-        try:
-            symbol = symbol or DEFAULT_SYMBOL
-            snap = rt.get_snapshot(symbol, "1 min")
-            company = rt.get_company_name(symbol)
-
-            bid = f"{snap.bid:.2f}" if snap.bid is not None else "--"
-            ask = f"{snap.ask:.2f}" if snap.ask is not None else "--"
-            last = f"{snap.last:.2f}" if snap.last is not None else "--"
-            size = f"{snap.last_size:.0f}" if snap.last_size is not None else "--"
-            updated = snap.updated_at.strftime("%H:%M:%S") if snap.updated_at else "--:--:--"
-
-            quote_text = [
-                html.Div(f"Company: {company}"),
-                html.Div(f"Symbol: {symbol}"),
-                html.Div(f"Last: {last}"),
-                html.Div(f"Bid: {bid}"),
-                html.Div(f"Ask: {ask}"),
-                html.Div(f"Last Size: {size}"),
-                html.Div(f"Updated: {updated}"),
-            ]
-
-            return f"Quotes loaded for {symbol}", quote_text
-
-        except Exception as exc:
-            return f"Quotes error: {exc}", f"Unable to load quotes for {symbol or DEFAULT_SYMBOL}"
-
     # ------------------------------------------------------------
     # Charts
     # ------------------------------------------------------------
