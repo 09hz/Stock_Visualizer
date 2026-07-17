@@ -1,6 +1,7 @@
 from dash import dcc, html
 from datetime import date, timedelta
 
+from rich import color
 
 CHART_CONFIG = {
     "displaylogo": False,
@@ -98,10 +99,17 @@ def build_dashboard_tab(symbol_options, timeframe_map, default_symbol, default_t
                             html.Label("Interval"),
                             dcc.Dropdown(
                                 id="timeframe-dropdown",
-                                options=make_timeframe_options(timeframe_map),
+                                options=[
+                                    {"label": "1 Min", "value": "1 min"},
+                                    {"label": "5 Min", "value": "5 min"},
+                                    {"label": "15 Min", "value": "15 min"},
+                                    {"label": "30 Min", "value": "30 min"},
+                                    {"label": "1 Hour", "value": "1 hour"},
+                                    {"label": "1 Day", "value": "1 day"},
+                                ],
                                 value=default_timeframe,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
@@ -558,8 +566,8 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 options=symbol_options,
                                 value=default_symbol,
                                 placeholder="Search ticker, symbol, or company...",
+                                clearable=True,
                                 searchable=True,
-                                clearable=False,
                                 className="black-dropdown",
                             ),
                         ],
@@ -776,10 +784,17 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                             html.Label("Interval"),
                             dcc.Dropdown(
                                 id="charts-timeframe-dropdown",
-                                options=make_timeframe_options(timeframe_map),
+                                options=[
+                                    {"label": "1 Min", "value": "1 min"},
+                                    {"label": "5 Min", "value": "5 min"},
+                                    {"label": "15 Min", "value": "15 min"},
+                                    {"label": "30 Min", "value": "30 min"},
+                                    {"label": "1 Hour", "value": "1 hour"},
+                                    {"label": "1 Day", "value": "1 day"},
+                                ],
                                 value=default_timeframe,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
