@@ -591,10 +591,16 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                             html.Label("Speed"),
                             dcc.Dropdown(
                                 id="replay-speed",
-                                options=make_replay_speed_options(),
+                                options= [
+                                    {"label": "0.25x", "value": 0.25, "search": "0.25x quarter slow"},
+                                            {"label": "0.5x", "value": 0.5, "search": "0.5x half slow"},
+                                            {"label": "1x", "value": 1, "search": "1x normal default"},
+                                            {"label": "2x", "value": 2, "search": "2x double fast"},
+                                            {"label": "5x", "value": 5, "search": "5x very fast"},
+                                ],
                                 value=default_speed,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
