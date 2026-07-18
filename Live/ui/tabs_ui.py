@@ -664,10 +664,10 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                             html.Label("Playback"),
                             html.Div(
                                 [
-                                    html.Button("▶ Play", id="replay-play", n_clicks=0),
-                                    html.Button("⏸ Pause", id="replay-pause", n_clicks=0),
-                                    html.Button("→ Step", id="replay-step", n_clicks=0),
-                                    html.Button("← Rewind", id="replay-rewind", n_clicks=0),
+                                    html.Button("Play", id="replay-play", n_clicks=0),
+                                    html.Button("Pause", id="replay-pause", n_clicks=0),
+                                    html.Button("Forward", id="replay-step", n_clicks=0),
+                                    html.Button("Rewind", id="replay-rewind", n_clicks=0),
                                 ],
                                 style={"display": "flex", "gap": "8px", "flexWrap": "wrap"},
                             ),
