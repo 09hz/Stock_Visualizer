@@ -1,7 +1,7 @@
 from dash import dcc, html
 from datetime import date, timedelta
 
-from rich import color
+
 
 CHART_CONFIG = {
     "displaylogo": False,
@@ -589,7 +589,6 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 value="1 min",
                                 clearable=False,
                                 searchable=False,
-                                className="black-dropdown",
                             ),
                         ],
                     ),
@@ -681,8 +680,9 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 id="replay-slider",
                                 min=1,
                                 max=100,
-                                step=1,
+                                step=10,
                                 value=default_index,
+                                className="my-slider",
                             ),
                         ],
                     ),
