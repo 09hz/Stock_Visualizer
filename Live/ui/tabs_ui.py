@@ -1,7 +1,7 @@
 from dash import dcc, html
 from datetime import date, timedelta
 
-
+from networkx.algorithms.bipartite.basic import color
 
 CHART_CONFIG = {
     "displaylogo": False,
@@ -276,7 +276,6 @@ def _build_strategy_lab_panel():
                             html.Div(
                                 className="strategy-help-example-control",
                                 children=[
-                                    html.Label("Load Example"),
                                     dcc.Dropdown(
                                         id="strategy-example-dropdown",
                                         options=[
