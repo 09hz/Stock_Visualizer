@@ -21,9 +21,8 @@ OHLCV_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
 
 TIMEFRAME_MAP: Dict[str, Tuple[str, str]] = {
     "1 min": ("1 min", "1 D"),
-    "5 min": ("5 min", "2 D"),
-    "15 min": ("15 min", "5 D"),
-    "30 min": ("30 min", "10 D"),
+    "5 min": ("5 mins", "2 D"),
+    "15 min": ("15 mins", "5 D"),
     "1 hour": ("1 hour", "30 D"),
     "1 day": ("1 day", "1 Y"),
 }
