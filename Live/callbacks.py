@@ -399,6 +399,7 @@ def register_callbacks(
         Input("main-tabs", "value"),
         Input("watch-symbol-dropdown", "value"),
         Input("symbol-dropdown", "value"),
+        Input("charts-symbol-dropdown", "value"),
         State("watch-state", "data"),
         State("dashboard-state", "data"),
     )
@@ -407,21 +408,24 @@ def register_callbacks(
             active_tab,
             watch_symbol,
             dashboard_symbol_dropdown,
+            charts_symbol_dropdown,
             watch_state,
             dashboard_state,
     ):
         if active_tab == "watch":
             symbol = (
-                    watch_symbol
-                    or (watch_state or {}).get("symbol")
-                    or DEFAULT_SYMBOL
+                watch_symbol
+                or (watch_state or {}).get("symbol")
+                or DEFAULT_SYMBOL
             )
+        elif active_tab == "charts":
+            symbol = charts_symbol_dropdown or DEFAULT_SYMBOL
         else:
             symbol = (
-                    active_symbol
-                    or dashboard_symbol_dropdown
-                    or (dashboard_state or {}).get("symbol")
-                    or DEFAULT_SYMBOL
+                active_symbol
+                or dashboard_symbol_dropdown
+                or (dashboard_state or {}).get("symbol")
+                or DEFAULT_SYMBOL
             )
 
         symbol = str(symbol).upper().strip()
@@ -629,8 +633,7 @@ def register_callbacks(
     # ------------------------------------------------------------------
     # WATCH REPLAY SERVER LOADER - SINGLE DAY + STITCHED DATE RANGE
     # ------------------------------------------------------------------
-    # Replace your current load_watch_symbol_from_request callback with this
-    # version. Its outputs match the 5-output callback you pasted.
+
 
     @app.callback(
         Output("watch-status", "children", allow_duplicate=True),
@@ -3040,84 +3043,145 @@ def register_callbacks(
             )
 
         return fig
-
-    # ------------------------------------------------------------
-    # Quotes
-    # ------------------------------------------------------------
-    @app.callback(
-        Output("quotes-status", "children"),
-        Output("quotes-panel", "children"),
-        Input("ui-interval", "n_intervals"),
-        Input("quotes-symbol-dropdown", "value"),
-        State("main-tabs", "value"),
-        prevent_initial_call=False,
-    )
-    def render_quotes_tab(_n, symbol, active_tab):
-        if active_tab != "quotes":
-            return no_update, no_update
-
-        try:
-            symbol = symbol or DEFAULT_SYMBOL
-            snap = rt.get_snapshot(symbol, "1 min")
-            company = rt.get_company_name(symbol)
-
-            bid = f"{snap.bid:.2f}" if snap.bid is not None else "--"
-            ask = f"{snap.ask:.2f}" if snap.ask is not None else "--"
-            last = f"{snap.last:.2f}" if snap.last is not None else "--"
-            size = f"{snap.last_size:.0f}" if snap.last_size is not None else "--"
-            updated = snap.updated_at.strftime("%H:%M:%S") if snap.updated_at else "--:--:--"
-
-            quote_text = [
-                html.Div(f"Company: {company}"),
-                html.Div(f"Symbol: {symbol}"),
-                html.Div(f"Last: {last}"),
-                html.Div(f"Bid: {bid}"),
-                html.Div(f"Ask: {ask}"),
-                html.Div(f"Last Size: {size}"),
-                html.Div(f"Updated: {updated}"),
-            ]
-
-            return f"Quotes loaded for {symbol}", quote_text
-
-        except Exception as exc:
-            return f"Quotes error: {exc}", f"Unable to load quotes for {symbol or DEFAULT_SYMBOL}"
-
     # ------------------------------------------------------------
     # Charts
     # ------------------------------------------------------------
     @app.callback(
+        Output("charts-chart-state", "data"),
+        Input("charts-live-mode", "n_clicks"),
+        Input("charts-reset-view", "n_clicks"),
+        Input("charts-range-1d", "n_clicks"),
+        Input("charts-range-1w", "n_clicks"),
+        Input("charts-range-1m", "n_clicks"),
+        Input("charts-range-3m", "n_clicks"),
+        Input("charts-range-1y", "n_clicks"),
+        Input("charts-range-5y", "n_clicks"),
+        Input("charts-range-max", "n_clicks"),
+        Input("charts-main-graph", "relayoutData"),
+        State("charts-chart-state", "data"),
+        prevent_initial_call=True,
+    )
+    def update_charts_chart_state(*args):
+        current_state = dict(args[-1] or _default_chart_state())
+        relayout_data = args[-2]
+        trigger_id = ctx.triggered_id
+
+        if trigger_id in {"charts-live-mode", "charts-reset-view"}:
+            return _default_chart_state(current_state.get("range_key", "1D"))
+
+        if isinstance(trigger_id, str) and trigger_id.startswith("charts-range-"):
+            range_key = _range_key_from_button(trigger_id, "charts-range-", "1D")
+            return _default_chart_state(range_key)
+
+        if trigger_id == "charts-main-graph":
+            parsed = _clean_relayout_range(relayout_data)
+            if parsed is no_update:
+                return no_update
+
+            new_state = dict(current_state)
+            new_state.update(parsed)
+            new_state["range_key"] = current_state.get("range_key", "1D")
+            return new_state
+
+        return no_update
+
+    @app.callback(
         Output("charts-status", "children"),
         Output("charts-main-graph", "figure"),
+        Output("chart-metrics-strip", "children"),
+        Output("charts-stats-grid", "children"),
         Input("ui-interval", "n_intervals"),
         Input("charts-symbol-dropdown", "value"),
         Input("charts-timeframe-dropdown", "value"),
+        Input("charts-chart-state", "data"),
         State("main-tabs", "value"),
         prevent_initial_call=False,
     )
-    def render_charts_tab(_n, symbol, timeframe, active_tab):
+    def render_charts_tab(_n, symbol, timeframe, charts_chart_state, active_tab):
         if active_tab != "charts":
-            return no_update, no_update
+            return no_update, no_update, no_update, no_update
 
         try:
-            symbol = symbol or DEFAULT_SYMBOL
+            symbol = (symbol or DEFAULT_SYMBOL).upper().strip()
             timeframe = timeframe or DEFAULT_TIMEFRAME
+            company_name = rt.get_company_name(symbol)
 
-            snap = rt.get_snapshot(symbol, timeframe)
-            fig = create_candlestick_figure(
-                snap.bars,
-                symbol,
-                timeframe,
-                current_price=snap.last,
-            )
-            fig = _apply_chart_view(fig, snap.bars, {"mode": "live", "range_key": "1D"}, default_range="1D")
-            fig.update_layout(uirevision=f"charts-{symbol}-{timeframe}", dragmode="pan")
+            try:
+                rt.request_symbol(symbol)
+            except Exception as req_exc:
+                print(f"[CHARTS REQUEST WARNING] {symbol}: {req_exc}", flush=True)
 
-            return f"Charts loaded for {symbol}", fig
+            try:
+                snap = rt.get_snapshot(symbol, timeframe)
+            except Exception as snapshot_exc:
+                msg = str(snapshot_exc)
+                if "No loaded state" in msg:
+                    try:
+                        rt.request_symbol(symbol)
+                    except Exception:
+                        pass
+                    fig = _empty_figure(f"{symbol} | Loading live candles...")
+                    status_text = f"LIVE · {company_name} ({symbol}) · Loading live data..."
+                    metrics = [
+                        html.Div(f"{symbol} / {company_name}", className="metric-price"),
+                        html.Div("Waiting for live candles...", className="metric-muted"),
+                    ]
+                    stats = [html.Div(className="stat-card", children=[html.Div("Waiting for bars...", className="stat-label")])]
+                    return status_text, fig, metrics, stats
+                raise
+
+            bars = snap.bars.copy() if getattr(snap, "bars", None) is not None else pd.DataFrame()
+            if not bars.empty:
+                bars["time"] = pd.to_datetime(bars["time"], errors="coerce", format="mixed")
+                bars = bars.dropna(subset=["time", "open", "high", "low", "close"]).copy()
+
+            if bars.empty:
+                fig = _empty_figure(f"{symbol} | Waiting for live candles...")
+                status_text = f"LIVE · {company_name} ({symbol}) · Waiting for candles"
+                return status_text, fig, [], []
+
+            latest_time = str(bars.iloc[-1]["time"])
+            latest_open = float(bars.iloc[-1]["open"])
+            latest_high = float(bars.iloc[-1]["high"])
+            latest_low = float(bars.iloc[-1]["low"])
+            latest_close = float(bars.iloc[-1]["close"])
+            current_price = float(snap.last) if getattr(snap, "last", None) is not None else latest_close
+
+            fig = create_candlestick_figure(bars, symbol, timeframe, current_price=current_price)
+            fig = _apply_chart_view(fig, bars, charts_chart_state, default_range="1D")
+
+            try:
+                if fig.data:
+                    for trace in fig.data:
+                        if hasattr(trace, "x") and trace.x is not None:
+                            trace.x = list(trace.x)
+                        if hasattr(trace, "open") and trace.open is not None:
+                            trace.open = [float(x) for x in trace.open]
+                        if hasattr(trace, "high") and trace.high is not None:
+                            trace.high = [float(x) for x in trace.high]
+                        if hasattr(trace, "low") and trace.low is not None:
+                            trace.low = [float(x) for x in trace.low]
+                        if hasattr(trace, "close") and trace.close is not None:
+                            trace.close = [float(x) for x in trace.close]
+            except Exception as trace_exc:
+                print(f"[CHARTS TRACE NORMALIZE WARNING] {trace_exc}", flush=True)
+
+            state = charts_chart_state or {}
+            range_key = _safe_range_key(state.get("range_key"), "1D")
+            mode = state.get("mode", "live")
+            redraw_key = f"{symbol}-{timeframe}-{mode}-{range_key}-{latest_time}-{latest_open}-{latest_high}-{latest_low}-{latest_close}-{current_price}-{_n}"
+            fig.update_layout(uirevision=None, datarevision=redraw_key, dragmode="pan", title={"text": f"{symbol} · {timeframe} · Last {current_price:,.2f} · tick {_n}", "x": 0.02, "xanchor": "left"})
+
+            updated = snap.updated_at.strftime("%H:%M:%S") if getattr(snap, "updated_at", None) else "--:--:--"
+            status_text = f"LIVE · {company_name} ({symbol}) · Updated {updated} · Last {current_price:,.2f}"
+
+            open_val = float(bars.iloc[0]["open"])
+            metrics = _build_metrics_strip(symbol, company_name, current_price, open_val, snap.updated_at)
+            stats = _build_stats_grid_from_bars(bars)
+
+            return status_text, fig, metrics, stats
 
         except Exception as exc:
-            fig = go.Figure()
-            fig.update_layout(
-                title=f"Charts tab error: {exc}",
-                template="plotly_dark",
-            )
-            return f"Charts error: {exc}", fig
+            print(f"[CHARTS RENDER ERROR] {exc}", flush=True)
+            fig = _empty_figure(f"Charts tab error: {exc}")
+            return f"Charts error: {exc}", fig, [], []

@@ -1,6 +1,7 @@
 from dash import dcc, html
 from datetime import date, timedelta
 
+from networkx.algorithms.bipartite.basic import color
 
 CHART_CONFIG = {
     "displaylogo": False,
@@ -98,18 +99,24 @@ def build_dashboard_tab(symbol_options, timeframe_map, default_symbol, default_t
                             html.Label("Interval"),
                             dcc.Dropdown(
                                 id="timeframe-dropdown",
-                                options=make_timeframe_options(timeframe_map),
+                                options=[
+                                    {"label": "1 Min", "value": "1 min"},
+                                    {"label": "5 Min", "value": "5 mins"},
+                                    {"label": "15 Min", "value": "15 mins"},
+                                    {"label": "1 Hour", "value": "1 hour"},
+                                    {"label": "1 Day", "value": "1 day"},
+                                ],
                                 value=default_timeframe,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
                     ),
                 ],
             ),
-            html.Div(id="load-status-text", className="status-text"),
             html.Div(id="dashboard-metrics-strip", className="metrics-strip"),
+            html.Div(id="load-status-text", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("dashboard"),
@@ -268,7 +275,6 @@ def _build_strategy_lab_panel():
                             html.Div(
                                 className="strategy-help-example-control",
                                 children=[
-                                    html.Label("Load Example"),
                                     dcc.Dropdown(
                                         id="strategy-example-dropdown",
                                         options=[
@@ -558,8 +564,8 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 options=symbol_options,
                                 value=default_symbol,
                                 placeholder="Search ticker, symbol, or company...",
-                                searchable=True,
                                 clearable=False,
+                                searchable=True,
                                 className="black-dropdown",
                             ),
                         ],
@@ -574,14 +580,12 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                     {"label": "1 Min", "value": "1 min"},
                                     {"label": "5 Min", "value": "5 min"},
                                     {"label": "15 Min", "value": "15 min"},
-                                    {"label": "30 Min", "value": "30 min"},
                                     {"label": "1 Hour", "value": "1 hour"},
                                     {"label": "1 Day", "value": "1 day"},
                                 ],
                                 value="1 min",
                                 clearable=False,
                                 searchable=False,
-                                className="black-dropdown",
                             ),
                         ],
                     ),
@@ -591,10 +595,16 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                             html.Label("Speed"),
                             dcc.Dropdown(
                                 id="replay-speed",
-                                options=make_replay_speed_options(),
+                                options= [
+                                    {"label": "0.25x", "value": 0.25, "search": "0.25x quarter slow"},
+                                            {"label": "0.5x", "value": 0.5, "search": "0.5x half slow"},
+                                            {"label": "1x", "value": 1, "search": "1x normal default"},
+                                            {"label": "2x", "value": 2, "search": "2x double fast"},
+                                            {"label": "5x", "value": 5, "search": "5x very fast"},
+                                ],
                                 value=default_speed,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
@@ -650,10 +660,10 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                             html.Label("Playback"),
                             html.Div(
                                 [
-                                    html.Button("▶ Play", id="replay-play", n_clicks=0),
-                                    html.Button("⏸ Pause", id="replay-pause", n_clicks=0),
-                                    html.Button("→ Step", id="replay-step", n_clicks=0),
-                                    html.Button("← Rewind", id="replay-rewind", n_clicks=0),
+                                    html.Button("Play", id="replay-play", n_clicks=0),
+                                    html.Button("Pause", id="replay-pause", n_clicks=0),
+                                    html.Button("Forward", id="replay-step", n_clicks=0),
+                                    html.Button("Rewind", id="replay-rewind", n_clicks=0),
                                 ],
                                 style={"display": "flex", "gap": "8px", "flexWrap": "wrap"},
                             ),
@@ -667,15 +677,16 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 id="replay-slider",
                                 min=1,
                                 max=100,
-                                step=1,
+                                step=10,
                                 value=default_index,
+                                className="my-slider",
                             ),
                         ],
                     ),
                 ],
             ),
-            html.Div(id="watch-status", className="status-text"),
             html.Div(id="watch-metrics-strip", className="metrics-strip"),
+            html.Div(id="watch-status", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("watch"),
@@ -701,46 +712,6 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
             _build_watch_workspace_tabs(),
         ],
     )
-
-
-def build_quotes_tab(symbol_options, default_symbol):
-    return html.Div(
-        className="tab-panel quotes-tab-panel",
-        children=[
-            html.Div(
-                className="controls-row",
-                children=[
-                    html.Div(
-                        className="control-box control-symbol",
-                        children=[
-                            html.Label("Instrument"),
-                            dcc.Dropdown(
-                                id="quotes-symbol-dropdown",
-                                options=symbol_options,
-                                value=default_symbol,
-                                placeholder="Search ticker, symbol, or company...",
-                                searchable=True,
-                                clearable=False,
-                                className="black-dropdown",
-                            ),
-                        ],
-                    ),
-                ],
-            ),
-            html.Div(id="quotes-status", className="status-text"),
-            html.Div(
-                className="chart-card",
-                children=[
-                    html.Div(
-                        id="quotes-panel",
-                        className="quote-strip",
-                        children="Ready for quotes",
-                    ),
-                ],
-            ),
-        ],
-    )
-
 
 def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_timeframe):
     return html.Div(
@@ -770,17 +741,28 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                             html.Label("Interval"),
                             dcc.Dropdown(
                                 id="charts-timeframe-dropdown",
-                                options=make_timeframe_options(timeframe_map),
+                                options=[
+                                    {"label": "1 Min", "value": "1 min"},
+                                    {"label": "5 Min", "value": "5 mins"},
+                                    {"label": "15 Min", "value": "15 mins"},
+                                    {"label": "1 Hour", "value": "1 hour"},
+                                    {"label": "1 Day", "value": "1 day"},
+                                ],
                                 value=default_timeframe,
                                 clearable=False,
-                                searchable=True,
+                                searchable=False,
                                 className="black-dropdown",
                             ),
                         ],
                     ),
                 ],
             ),
+            html.Div(id="chart-metrics-strip", className="metrics-strip"),
             html.Div(id="charts-status", className="status-text"),
+            html.Div(
+                className="range-row chart-control-row",
+                children=make_chart_control_buttons("charts"),
+            ),
             html.Div(
                 className="chart-card",
                 children=[
@@ -791,5 +773,6 @@ def build_charts_tab(symbol_options, timeframe_map, default_symbol, default_time
                     ),
                 ],
             ),
+            html.Div(id="charts-stats-grid", className="stats-grid"),
         ],
     )

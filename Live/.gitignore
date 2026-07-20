@@ -65,3 +65,5 @@ Live/cache/
 .env.*
 venv/
 .venv/
+.idea/workspace.xml
+

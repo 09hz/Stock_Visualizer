@@ -191,20 +191,19 @@ def create_candlestick_figure(
             y=float(price_for_line),
             line_width=1.2,
             line_dash="dot",
-            line_color="#60a5fa",
+            line_color="white",
             opacity=0.95,
             annotation_text=f"{float(price_for_line):,.2f}",
             annotation_position="right",
-            annotation_font=dict(color="white", size=12),
-            annotation_bgcolor="#2563eb",
-            annotation_bordercolor="#60a5fa",
+            annotation_font=dict(color="black", size=12),
+            annotation_bgcolor="white",
+            annotation_bordercolor="black",
         )
 
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0d1b4f",
-        plot_bgcolor="#0d1b4f",
-        font={"color": "#e8f1ff"},
+        paper_bgcolor="black",
+        plot_bgcolor="black",
+        font={"color": "white"},
         dragmode="pan",
         hovermode="x unified",
         margin={"l": 40, "r": 20, "t": 50, "b": 40},
@@ -223,7 +222,7 @@ def create_candlestick_figure(
 
     fig.update_yaxes(
         showgrid=True,
-        gridcolor="rgba(255,255,255,0.05)",
+        gridcolor="white",
         zeroline=False,
         showline=False,
         side="right",
