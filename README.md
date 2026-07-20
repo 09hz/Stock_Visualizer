@@ -2,7 +2,7 @@
 
 A local Python/Dash trading research platform for real-time stock visualization, historical replay, paper trading, strategy scripting, backtesting, and chart overlays.
 
-> **Status:** Portfolio/demo project. This application is for education, research, and strategy development only. It is not financial advice and is not intended for unattended live trading.
+> **Status:**  This application is for education, research, and strategy development only. It is not financial advice and is not intended for unattended live trading.
 
 ---
 
@@ -40,7 +40,6 @@ To use live and historical market data through the app, you generally need:
 4. Market data permissions/subscriptions for the symbols and exchanges you want to load.
 5. Sufficient account funding to meet IBKR market-data/API requirements.
 
-Limited UI and local/demo functionality may run without an active IBKR connection if you already have cached data, but normal live data loading and historical replay loading depend on IBKR access.
 
 ### Market data subscription required
 
@@ -236,14 +235,11 @@ Live/
 │   ├── backtest_service.py
 │   ├── bar_store.py
 │   ├── bar_view_service.py
-│   ├── broker_adapter.py
 │   ├── chart_viewport_service.py
-│   ├── llm_service.py
 │   ├── paper_cache.py
 │   ├── paper_trading_service.py
 │   ├── replay_service.py
 │   ├── strategy_overlay_service.py
-│   └── strategy_service.py
 ├── ui/
 │   └── tabs_ui.py
 ├── utils/
@@ -304,34 +300,6 @@ Optional parquet support, recommended for replay cache performance:
 ```bash
 pip install pyarrow fastparquet
 ```
-
-### 4. Create `.env`
-
-Create a local `.env` file from the example:
-
-```bash
-cp .env.example .env
-```
-
-Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Example environment variables:
-
-```env
-IB_HOST=127.0.0.1
-IB_PORT=7497
-IB_CLIENT_ID=7
-APP_HOST=127.0.0.1
-APP_PORT=8050
-```
-
-Do not commit `.env`.
-
----
 
 ## Interactive Brokers / TWS Setup
 
@@ -400,6 +368,9 @@ For historical dates, ReplayService filters for the regular session window and v
 2. Select a start date and end date.
 3. Click Load Range.
 4. The service loads/stitches valid trading days into the replay engine.
+ 
+Notice! For periods longer than a month, time to recover data visually will take a long time! 
+Back testing works independently so even if the data has not loaded on the chart you still can run the backtest!
 
 ### 4. Run a strategy
 

@@ -1,8 +1,9 @@
-lightweight-charts
 yfinance
 pandas_ta
 pandas
 nest-asyncio
-ib_insync
+ib_async
 plotly
 dash
+networkx
+pyarrow
