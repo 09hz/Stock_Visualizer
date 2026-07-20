@@ -56,10 +56,6 @@ if PaperTradingService and PaperBroker and RiskGuard:
             slippage_bps=1.0,
         ),
         risk_guard=RiskGuard(
-            allowed_symbols=None,
-            max_quantity=1_000,
-            max_notional=25_000,
-            allow_short=False,
             live_trading_enabled=False,
         ),
     )
