@@ -551,6 +551,7 @@ def register_callbacks(
         Input("watch-range-1y", "n_clicks"),
         Input("watch-range-5y", "n_clicks"),
         Input("watch-range-max", "n_clicks"),
+        Input("watch-timeframe-dropdown", "value"),
         Input("watch-chart", "relayoutData"),
         State("watch-chart-state", "data"),
         prevent_initial_call=True,
@@ -559,6 +560,13 @@ def register_callbacks(
         current_state = dict(args[-1] or _default_chart_state())
         relayout_data = args[-2]
         trigger_id = ctx.triggered_id
+
+        if trigger_id == "watch-timeframe-dropdown":
+            timeframe = str(args[-3] or "1 min").lower().strip()
+            # A daily Watch candle represents each loaded replay date. Show the
+            # complete loaded range by default so no daily candles are omitted.
+            range_key = "MAX" if timeframe in {"1 day", "1d"} else "1D"
+            return _default_chart_state(range_key)
 
         if trigger_id in {"watch-live-mode", "watch-reset-view"}:
             return _default_chart_state(current_state.get("range_key", "1D"))
@@ -678,7 +686,11 @@ def register_callbacks(
                     symbol=symbol,
                     start_date=replay_date,
                     end_date=replay_end_date,
-                    timeframe="1 min",
+                    timeframe=(
+                        "1 day"
+                        if str(display_timeframe).lower().strip() in {"1 day", "1d"}
+                        else "1 min"
+                    ),
                     speed=replay_speed or 1,
                 )
 
@@ -690,7 +702,7 @@ def register_callbacks(
                 return (
                     (
                         f"Loaded {symbol} replay range {replay_date} → {replay_end_date} · "
-                        f"{len(trading_days)} trading days · {len(stitched):,} raw 1-min bars · "
+                        f"{len(trading_days)} weekdays requested · {len(stitched):,} source bars · "
                         f"display {display_timeframe}."
                     ),
                     max_idx,

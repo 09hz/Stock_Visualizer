@@ -209,11 +209,17 @@ def create_candlestick_figure(
         margin={"l": 40, "r": 20, "t": 50, "b": 40},
     )
 
+    rangebreaks = [dict(bounds=["sat", "mon"])]
+
+    # Intraday bars need the overnight market-hours gap removed. Daily bars
+    # are timestamped at midnight, so applying that same gap hides every daily
+    # candle from Plotly.
+    timeframe_key = str(timeframe or "").lower().strip()
+    if timeframe_key not in {"1 day", "1d", "1 day bars"}:
+        rangebreaks.append(dict(bounds=[16, 9.5], pattern="hour"))
+
     fig.update_xaxes(
-        rangebreaks=[
-            dict(bounds=["sat", "mon"]),
-            dict(bounds=[16, 9.5], pattern="hour"),
-        ],
+        rangebreaks=rangebreaks,
         rangeslider_visible=False,
     )
 

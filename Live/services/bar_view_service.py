@@ -241,6 +241,8 @@ class BarViewService:
         if full_bars.empty:
             full_bars = visible.copy()
 
+        # All replay intervals remain cursor-based. For native daily ranges,
+        # each replay step reveals exactly one additional daily candle.
         chart_bars = self.resample_bars(visible, display_timeframe)
 
         current_price = None

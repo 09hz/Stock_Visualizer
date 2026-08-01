@@ -471,12 +471,13 @@ class ReplayService:
         force_refresh: bool = False,
     ) -> pd.DataFrame:
         """
-        Load and stitch multiple weekday replay sessions into one active replay dataset.
+        Load and stitch a replay range into one active replay dataset.
 
         Important:
             * Weekends are skipped.
-            * Raw replay data is always loaded as 1-minute bars.
-            * The Watch Interval dropdown should resample the chart display only.
+            * Intraday Watch intervals use raw 1-minute replay bars.
+            * The 1-day Watch interval loads native daily bars so each trading
+              date is represented by exactly one source bar.
             * The stitched DataFrame is installed into ReplayEngine, so visible_bars(),
               current_bar(), info(), the replay slider, paper trading, and backtests all
               read from the same multi-day dataset.
@@ -507,6 +508,56 @@ class ReplayService:
 
         if not days:
             raise ValueError("No weekday trading days found in selected range.")
+
+        requested_timeframe = str(timeframe or "1 min").lower().strip()
+
+        if requested_timeframe in {"1 day", "1d", "1 day bars"}:
+            # Fetch the range once. Requesting each date separately with a
+            # daily bar size would issue redundant one-year IB history calls.
+            start_dt = start.normalize().to_pydatetime()
+            end_dt = (end.normalize() + pd.Timedelta(days=1)).to_pydatetime()
+
+            daily = self.rt.load_history_range(
+                symbol,
+                "1 day",
+                start_dt,
+                end_dt,
+            )
+            daily = self._normalize_replay_bars(daily)
+
+            if not daily.empty:
+                daily_dates = daily["time"].dt.normalize()
+                daily = daily[
+                    (daily_dates >= start.normalize())
+                    & (daily_dates <= end.normalize())
+                    & (daily["time"].dt.weekday < 5)
+                ].copy()
+                daily = (
+                    daily.sort_values("time")
+                    .drop_duplicates(subset="time")
+                    .reset_index(drop=True)
+                )
+
+            if daily.empty:
+                raise ValueError("No daily replay bars found for selected date range.")
+
+            self.current_symbol = symbol
+            self.current_timeframe = "1 day"
+            self.current_replay_date = start.date().isoformat()
+            self.current_replay_end_date = end.date().isoformat()
+
+            self.engine.reset()
+            self.engine.load_from_df(daily)
+
+            if speed is not None:
+                self.engine.set_speed(speed)
+
+            print(
+                f"[REPLAY RANGE DAILY] installed {len(daily):,} bars: "
+                f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()}.",
+                flush=True,
+            )
+            return daily
 
         # The replay engine uses 1-minute source bars. Display intervals are handled
         # later by Watch chart rendering / BarViewService resampling.
