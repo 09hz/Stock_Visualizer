@@ -474,7 +474,7 @@ class StrategyEngine:
                     marker={
                         "symbol": "triangle-up",
                         "size": 16,
-                        "color": "#22c55e",
+                        "color": "#38bdf8",
                         "line": {"width": 1, "color": "#ffffff"},
                     },
                     cliponaxis=False,
@@ -499,7 +499,7 @@ class StrategyEngine:
                     marker={
                         "symbol": "triangle-down",
                         "size": 16,
-                        "color": "#ef4444",
+                        "color": "#e879f9",
                         "line": {"width": 1, "color": "#ffffff"},
                     },
                     cliponaxis=False,
