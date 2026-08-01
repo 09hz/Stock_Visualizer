@@ -84,6 +84,7 @@ class RealTimeIB:
 
         # Non-blocking symbol subscription requests from Dash callbacks.
         self._requests: queue.Queue[tuple[Any, ...]] = queue.Queue()
+        self._pending_symbols: set[str] = set()
 
         # Blocking call queue for operations that must execute on the IB thread.
         self._call_queue: queue.Queue[
@@ -320,6 +321,24 @@ class RealTimeIB:
 
     def request_symbol(self, symbol: str) -> None:
         symbol = self._sanitize_symbol(symbol)
+
+        # Render callbacks may ask for the same symbol many times while waiting
+        # for the IB thread. Keep at most one pending request, and do nothing
+        # when the symbol is already loaded and subscribed.
+        with self._lock:
+            state = self._states.get((symbol, "1 min"))
+            is_ready = (
+                symbol in self._tickers
+                and state is not None
+                and state.bars is not None
+                and not state.bars.empty
+            )
+
+            if is_ready or symbol in self._pending_symbols:
+                return
+
+            self._pending_symbols.add(symbol)
+
         self._requests.put(("symbol", symbol))
 
     def _process_requests(self) -> None:
@@ -338,6 +357,10 @@ class RealTimeIB:
 
             except Exception as exc:
                 print(f"[REQUEST ERROR] {req}: {exc}", flush=True)
+            finally:
+                if len(req) > 1:
+                    with self._lock:
+                        self._pending_symbols.discard(str(req[1]))
 
     # ------------------------------------------------------------------
     # Contract and historical data
@@ -782,8 +805,20 @@ class RealTimeIB:
         symbol = self._sanitize_symbol(symbol)
         timeframe = "1 min"
 
-        self._load_history_ib_thread(symbol, timeframe)
-        self._subscribe_live_ib_thread(symbol, timeframe)
+        with self._lock:
+            state = self._states.get((symbol, timeframe))
+            has_history = (
+                state is not None
+                and state.bars is not None
+                and not state.bars.empty
+            )
+            has_subscription = symbol in self._tickers
+
+        if not has_history:
+            self._load_history_ib_thread(symbol, timeframe)
+
+        if not has_subscription:
+            self._subscribe_live_ib_thread(symbol, timeframe)
 
     @staticmethod
     def _sanitize_symbol(symbol: str) -> str:

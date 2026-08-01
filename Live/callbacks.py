@@ -1824,13 +1824,6 @@ def register_callbacks(
             timeframe = timeframe or DEFAULT_TIMEFRAME
             company_name = rt.get_company_name(symbol)
 
-            # Make sure the dashboard symbol has an active live subscription.
-            # This is cheap if already subscribed.
-            try:
-                rt.request_symbol(symbol)
-            except Exception as req_exc:
-                print(f"[DASHBOARD REQUEST WARNING] {symbol}: {req_exc}", flush=True)
-
             # RealTimeIB can briefly lag after a symbol switch.
             # Instead of throwing "No loaded state", show a loading chart and retry
             # on the next ui-interval tick.
@@ -1935,7 +1928,7 @@ def register_callbacks(
             redraw_key = (
                 f"{symbol}-{timeframe}-{mode}-{range_key}-"
                 f"{latest_time}-{latest_open}-{latest_high}-{latest_low}-{latest_close}-"
-                f"{current_price}-{_n}"
+                f"{current_price}-{snap.tick_count}"
             )
 
             fig.update_layout(
@@ -1943,7 +1936,7 @@ def register_callbacks(
                 datarevision=redraw_key,
                 dragmode="pan",
                 title={
-                    "text": f"{symbol} · {timeframe} · Last {current_price:,.2f} · tick {_n}",
+                    "text": f"{symbol} · {timeframe} · Last {current_price:,.2f}",
                     "x": 0.02,
                     "xanchor": "left",
                 },
@@ -2020,18 +2013,6 @@ def register_callbacks(
             if selected_source != "live":
                 return no_update
 
-        # Paper trades should update the paper state immediately, but they
-        # should not force an expensive chart redraw while replay is actively
-        # playing. When paused, allow the redraw so markers appear immediately.
-        if trigger_id == "paper-trade-trigger":
-            selected_source = str(price_source or "replay").lower().strip()
-            if selected_source != "live":
-                try:
-                    if bool(replay_service.info().get("playing")):
-                        return no_update
-                except Exception:
-                    pass
-
         try:
             price_source = str(price_source or "replay").lower().strip()
             display_timeframe = str(watch_timeframe or "1 min")
@@ -2099,10 +2080,9 @@ def register_callbacks(
             )
 
             # Paper trade markers only belong on Watch.
-            # During active replay playback, do not query fills and redraw markers on
-            # every frame. Paper state still updates immediately; visual markers refresh
-            # when replay is paused, stepped, reset, or otherwise redrawn.
-            if paper_trading_service is not None and not is_replay_playing_for_render:
+            # Fill markers remain visible during playback and are redrawn
+            # immediately when paper-trade-trigger changes.
+            if paper_trading_service is not None:
                 try:
                     fills_df = paper_trading_service.fills_df()
 
@@ -2152,7 +2132,13 @@ def register_callbacks(
                         )
 
                         if snapshot is not None:
-                            strategy_result = snapshot.result
+                            strategy_result = (
+                                strategy_overlay_service.engine.filter_result_to_bars(
+                                    snapshot.result,
+                                    strategy_source_bars,
+                                    chart_bars,
+                                )
+                            )
 
                             warning_key = (
                                 symbol,
@@ -2213,12 +2199,10 @@ def register_callbacks(
 
             idx = replay_idx_for_render or watch_view.current_index
 
-            paper_key = ""
-            if not is_replay_playing_for_render:
-                try:
-                    paper_key = str(_paper_trade_trigger or "")
-                except Exception:
-                    paper_key = ""
+            try:
+                paper_key = str(_paper_trade_trigger or "")
+            except Exception:
+                paper_key = ""
 
             fig.update_layout(
                 uirevision=f"watch-{symbol}-{source_label}-{mode}-{range_key}",
@@ -2837,11 +2821,16 @@ def register_callbacks(
         if "time" not in df_bars.columns:
             return fig
 
-        df_bars["bar_time"] = pd.to_datetime(
-            df_bars["time"],
-            errors="coerce",
-            format="mixed",
-        )
+        def _marker_time(value):
+            try:
+                parsed = pd.Timestamp(value)
+                if parsed.tzinfo is not None:
+                    parsed = parsed.tz_localize(None)
+                return parsed
+            except Exception:
+                return pd.NaT
+
+        df_bars["bar_time"] = df_bars["time"].map(_marker_time)
 
         for col in ("high", "low", "close"):
             if col not in df_bars.columns:
@@ -2858,11 +2847,7 @@ def register_callbacks(
         if df_bars.empty:
             return fig
 
-        fills["_fill_time"] = pd.to_datetime(
-            fills[time_col],
-            errors="coerce",
-            format="mixed",
-        )
+        fills["_fill_time"] = fills[time_col].map(_marker_time)
 
         fills["price"] = pd.to_numeric(fills["price"], errors="coerce")
         fills["quantity"] = pd.to_numeric(fills["quantity"], errors="coerce").fillna(0)
@@ -2928,23 +2913,16 @@ def register_callbacks(
             order_ids = ", ".join(str(x) for x in group["order_id"].tolist())
             count = len(group)
 
-            high = float(group["high"].iloc[0])
-            low = float(group["low"].iloc[0])
-            close = float(group["close"].iloc[0])
-
-            candle_range = max(high - low, abs(close) * 0.002, 0.01)
-            offset = candle_range * 0.45
-
             if side == "BUY":
-                y = high + offset
+                y = avg_price
                 marker_symbol = "triangle-up"
                 label = f"BUY x{count}" if count > 1 else "BUY"
-                text_position = "top center"
+                text_position = "bottom center"
             else:
-                y = low - offset
+                y = avg_price
                 marker_symbol = "triangle-down"
                 label = f"SELL x{count}" if count > 1 else "SELL"
-                text_position = "bottom center"
+                text_position = "top center"
 
             realized = 0.0
             if "realized_pnl" in group.columns:
@@ -3015,7 +2993,8 @@ def register_callbacks(
                         line=dict(width=1, color="#ffffff"),
                     ),
                     text=buys["label"],
-                    textposition="top center",
+                    textposition="bottom center",
+                    cliponaxis=False,
                     hovertext=buys["hover"],
                     hoverinfo="text",
                     name="Paper Buys",
@@ -3035,7 +3014,8 @@ def register_callbacks(
                         line=dict(width=1, color="#ffffff"),
                     ),
                     text=sells["label"],
-                    textposition="bottom center",
+                    textposition="top center",
+                    cliponaxis=False,
                     hovertext=sells["hover"],
                     hoverinfo="text",
                     name="Paper Sells",
@@ -3107,11 +3087,6 @@ def register_callbacks(
             company_name = rt.get_company_name(symbol)
 
             try:
-                rt.request_symbol(symbol)
-            except Exception as req_exc:
-                print(f"[CHARTS REQUEST WARNING] {symbol}: {req_exc}", flush=True)
-
-            try:
                 snap = rt.get_snapshot(symbol, timeframe)
             except Exception as snapshot_exc:
                 msg = str(snapshot_exc)
@@ -3169,8 +3144,8 @@ def register_callbacks(
             state = charts_chart_state or {}
             range_key = _safe_range_key(state.get("range_key"), "1D")
             mode = state.get("mode", "live")
-            redraw_key = f"{symbol}-{timeframe}-{mode}-{range_key}-{latest_time}-{latest_open}-{latest_high}-{latest_low}-{latest_close}-{current_price}-{_n}"
-            fig.update_layout(uirevision=None, datarevision=redraw_key, dragmode="pan", title={"text": f"{symbol} · {timeframe} · Last {current_price:,.2f} · tick {_n}", "x": 0.02, "xanchor": "left"})
+            redraw_key = f"{symbol}-{timeframe}-{mode}-{range_key}-{latest_time}-{latest_open}-{latest_high}-{latest_low}-{latest_close}-{current_price}-{snap.tick_count}"
+            fig.update_layout(uirevision=None, datarevision=redraw_key, dragmode="pan", title={"text": f"{symbol} · {timeframe} · Last {current_price:,.2f}", "x": 0.02, "xanchor": "left"})
 
             updated = snap.updated_at.strftime("%H:%M:%S") if getattr(snap, "updated_at", None) else "--:--:--"
             status_text = f"LIVE · {company_name} ({symbol}) · Updated {updated} · Last {current_price:,.2f}"

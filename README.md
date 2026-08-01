@@ -184,7 +184,7 @@ Incomplete historical cache data is invalidated and refetched. Empty holiday/no-
 
 ## Tech Stack
 
-- Python
+- Python 3.13
 - Dash
 - Plotly
 - pandas
@@ -255,7 +255,12 @@ Live/
 
 ## Setup
 
-Recommended Python: **3.10+**
+Recommended interpreter: **64-bit Python 3.13**.
+
+A virtual environment is not required. If Python 3.13 is installed as your
+system or user interpreter, install the dependencies with that interpreter and
+run the application directly. An optional virtual-environment workflow is
+included below for contributors who want dependency isolation.
 
 ### 1. Clone the repository
 
@@ -264,41 +269,66 @@ git clone <your-repo-url>
 cd Stock_Visualizer
 ```
 
-### 2. Create a virtual environment
-
-```bash
-python -m venv .venv
-```
+### 2. Verify Python 3.13
 
 Windows PowerShell:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+py -3.13 --version
 ```
 
 macOS/Linux:
 
 ```bash
-source .venv/bin/activate
+python3.13 --version
 ```
+
+The command should report Python `3.13.x`.
 
 ### 3. Install dependencies
 
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
+The repository's requirements file is located at
+`Live/docs/requirements.txt`.
+
+Windows PowerShell:
+
+```powershell
+py -3.13 -m pip install --upgrade pip
+py -3.13 -m pip install -r Live/docs/requirements.txt
 ```
 
-If your project keeps requirements under `Live/docs/requirements.txt`, use:
+macOS/Linux:
 
 ```bash
-pip install -r Live/docs/requirements.txt
+python3.13 -m pip install --upgrade pip
+python3.13 -m pip install -r Live/docs/requirements.txt
 ```
 
-Optional parquet support, recommended for replay cache performance:
+This installs Dash, Plotly, pandas, `ib_async`, replay-cache support, and the
+other packages used by the application. `pyarrow` is already included in the
+requirements file.
+
+### Optional: use a virtual environment
+
+You can skip this section when using your installed Python 3.13 interpreter.
+To keep project packages isolated, create the environment with Python 3.13:
+
+Windows PowerShell:
+
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r Live/docs/requirements.txt
+```
+
+macOS/Linux:
 
 ```bash
-pip install pyarrow fastparquet
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r Live/docs/requirements.txt
 ```
 
 ## Interactive Brokers / TWS Setup
@@ -308,23 +338,38 @@ pip install pyarrow fastparquet
 3. Enable API access:
    - TWS: `File > Global Configuration > API > Settings`
    - Enable socket clients.
-   - Confirm the socket port.
-4. Common ports:
+   - Set or confirm the socket port.
+4. The current application configuration uses `127.0.0.1:4001` in
+   `Live/app.py`. Configure TWS/IB Gateway to accept API connections on port
+   `4001`, or change the port in `Live/app.py` to match your installation.
+5. Common IBKR defaults for reference:
    - Paper TWS: `7497`
    - Live TWS: `7496`
-   - Gateway ports may differ depending on your configuration.
-5. Add `127.0.0.1` as a trusted IP if required.
-6. Confirm your IBKR account has the market data subscriptions needed for the symbols you want to load.
+   - Paper IB Gateway: `4002`
+   - Live IB Gateway: `4001`
+6. Add `127.0.0.1` as a trusted IP if required.
+7. Confirm your IBKR account has the market data subscriptions needed for the symbols you want to load.
 
 ---
 
 ## Running the App
 
-From the project root:
+From the project root, using the system/user Python 3.13 interpreter:
+
+Windows PowerShell:
+
+```powershell
+py -3.13 Live/app.py
+```
+
+macOS/Linux:
 
 ```bash
-python Live/app.py
+python3.13 Live/app.py
 ```
+
+If an activated virtual environment is being used, run `python Live/app.py`
+instead.
 
 Then open:
 
@@ -338,8 +383,8 @@ http://127.0.0.1:8050
 
 ### 1. Quick start
 
-```bash
-python Live/app.py
+```powershell
+py -3.13 Live/app.py
 ```
 
 Then in the browser:
@@ -475,7 +520,8 @@ If the app cannot connect to Interactive Brokers:
 
 - Confirm TWS or IB Gateway is running.
 - Confirm API access is enabled.
-- Confirm the host and port match `.env`.
+- Confirm TWS/IB Gateway is listening on `127.0.0.1:4001`, or change the
+  `RealTimeIB` port in `Live/app.py` to match your configured API socket port.
 - Confirm trusted IP settings allow `127.0.0.1`.
 - Confirm your IBKR session is logged in.
 
