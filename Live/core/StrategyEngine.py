@@ -473,8 +473,11 @@ class StrategyEngine:
                     textposition="bottom center",
                     marker={
                         "symbol": "triangle-up",
-                        "size": 12,
+                        "size": 16,
+                        "color": "#22c55e",
+                        "line": {"width": 1, "color": "#ffffff"},
                     },
+                    cliponaxis=False,
                     hovertemplate=(
                         "BUY<br>"
                         "Time: %{x}<br>"
@@ -495,8 +498,11 @@ class StrategyEngine:
                     textposition="top center",
                     marker={
                         "symbol": "triangle-down",
-                        "size": 12,
+                        "size": 16,
+                        "color": "#ef4444",
+                        "line": {"width": 1, "color": "#ffffff"},
                     },
+                    cliponaxis=False,
                     hovertemplate=(
                         "SELL<br>"
                         "Time: %{x}<br>"
