@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import sys
 import asyncio
-from datetime import date
+import os
+import secrets
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+from datetime import timedelta
 
 from dash import Dash, dcc, html
+from flask import session
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -21,7 +27,10 @@ from config import (
 from core.RealTime import RealTimeIB, TIMEFRAME_MAP
 from core.ReplayModule import ReplayEngine
 from services.replay_service import ReplayService
+from services.bar_store import BarStore
+from services.market_calendar_service import MarketCalendarService
 from services.paper_cache import PaperStateCache
+from services.session_state_registry import SessionServiceProxy, SessionStateRegistry
 from ui.tabs_ui import (
     build_dashboard_tab,
     build_watch_tab,
@@ -39,31 +48,88 @@ except Exception:
     RiskGuard = None
 
 
+market_calendar = MarketCalendarService()
+exchange_today = market_calendar.exchange_now().date()
+default_replay_date = market_calendar.last_completed_session().isoformat()
+max_replay_date = market_calendar.last_completed_session()
+disabled_replay_days = market_calendar.non_session_days(
+    exchange_today - timedelta(days=3650),
+    exchange_today + timedelta(days=365),
+)
+
 rt = RealTimeIB(host="127.0.0.1", port=4001)
-rt.start(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
-
-replay_engine = ReplayEngine()
-replay_service = ReplayService(rt, replay_engine)
-
-paper_trading_service = None
-paper_state_cache = PaperStateCache(cache_dir="cache/paper")
-
-if PaperTradingService and PaperBroker and RiskGuard:
-    paper_trading_service = PaperTradingService(
-        broker=PaperBroker(
-            starting_cash=100_000,
-            commission_per_order=0.0,
-            slippage_bps=1.0,
-        ),
-        risk_guard=RiskGuard(
-            live_trading_enabled=False,
-        ),
-    )
+rt.start_in_background(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
 
 SYMBOL_OPTIONS = rt.get_symbol_options()
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 app.title = APP_TITLE
+app.server.secret_key = (
+    os.environ.get("STOCK_VISUALIZER_SECRET_KEY") or secrets.token_hex(32)
+)
+
+
+@app.server.before_request
+def ensure_browser_session_id() -> None:
+    if "stock_visualizer_session_id" not in session:
+        session["stock_visualizer_session_id"] = uuid4().hex
+
+
+def current_browser_session_id() -> str:
+    return str(session["stock_visualizer_session_id"])
+
+
+cache_root = Path(__file__).resolve().parent.parent / "cache"
+shared_bar_store = BarStore(cache_root / "replay")
+
+
+def build_session_services(session_id: str) -> SimpleNamespace:
+    replay = ReplayService(
+        rt,
+        ReplayEngine(),
+        bar_store=shared_bar_store,
+        market_calendar=market_calendar,
+    )
+    paper = None
+    paper_cache = None
+    if PaperTradingService and PaperBroker and RiskGuard:
+        paper = PaperTradingService(
+            broker=PaperBroker(
+                starting_cash=100_000,
+                commission_per_order=0.0,
+                slippage_bps=1.0,
+            ),
+            risk_guard=RiskGuard(live_trading_enabled=False),
+        )
+        paper_cache = PaperStateCache(cache_root / "paper" / session_id)
+
+    return SimpleNamespace(
+        replay_service=replay,
+        paper_trading_service=paper,
+        paper_state_cache=paper_cache,
+    )
+
+
+session_services = SessionStateRegistry(build_session_services)
+replay_service = SessionServiceProxy(
+    session_services,
+    current_browser_session_id,
+    "replay_service",
+)
+if PaperTradingService and PaperBroker and RiskGuard:
+    paper_trading_service = SessionServiceProxy(
+        session_services,
+        current_browser_session_id,
+        "paper_trading_service",
+    )
+    paper_state_cache = SessionServiceProxy(
+        session_services,
+        current_browser_session_id,
+        "paper_state_cache",
+    )
+else:
+    paper_trading_service = None
+    paper_state_cache = None
 
 app.layout = html.Div(
     className="app-shell",
@@ -73,6 +139,10 @@ app.layout = html.Div(
             children=[
                 html.Div(id="pair-title", className="pair-title"),
                 html.Div(id="quote-strip", className="quote-strip"),
+                html.Div(
+                    id="ib-connection-status",
+                    className="connection-status connection-status-connecting",
+                ),
             ],
         ),
         dcc.Tabs(
@@ -105,7 +175,9 @@ app.layout = html.Div(
                             default_symbol=DEFAULT_SYMBOL,
                             default_speed=DEFAULT_REPLAY_SPEED,
                             default_index=DEFAULT_REPLAY_INDEX,
-                            default_date=date.today().isoformat(),
+                            default_date=default_replay_date,
+                            disabled_replay_days=disabled_replay_days,
+                            max_replay_date=max_replay_date,
                         )
                     ],
                 ),
@@ -132,6 +204,20 @@ app.layout = html.Div(
         # Dedicated replay heartbeat. This drives Play/Pause independently
         # from the general UI interval.
         dcc.Interval(id="replay-clock", interval=250, n_intervals=0),
+
+        # Refreshes Live-mode availability without redrawing on every UI tick.
+        dcc.Interval(id="market-status-interval", interval=30_000, n_intervals=0),
+
+        # Keeps connection status visible and retries IBKR without blocking UI.
+        dcc.Interval(id="ib-connection-interval", interval=5_000, n_intervals=0),
+
+        # Polls range-loading progress only while a Watch request is active.
+        dcc.Interval(
+            id="watch-loading-progress-interval",
+            interval=400,
+            n_intervals=0,
+            disabled=True,
+        ),
 
         # Replay render trigger. Buttons/clock bump this store so the Watch chart
         # redraws without the slider callback fighting the clock.
@@ -218,6 +304,7 @@ register_callbacks(
     TIMEFRAME_MAP,
     paper_trading_service=paper_trading_service,
     paper_state_cache=paper_state_cache,
+    market_calendar=market_calendar,
 )
 
 if __name__ == "__main__":

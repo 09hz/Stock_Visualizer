@@ -29,6 +29,7 @@ from core.BackTestEngine import BackTestEngine
 from services.strategy_overlay_service import StrategyOverlayService
 from services.bar_view_service import BarViewService
 from services.chart_viewport_service import ChartViewportService
+from services.replay_service import ReplayLoadCancelled
 
 from renderers.watch_chart_renderer import WatchChartRenderer
 from renderers.strategy_overlay_renderer import StrategyOverlayRenderer
@@ -294,23 +295,6 @@ def _apply_chart_view(fig, bars: pd.DataFrame, chart_state: dict | None, default
     fig = _fit_y_axis_to_visible_bars(fig, bars, x_range)
     return fig
 
-def _is_today_or_latest_replay_date(replay_date) -> bool:
-    """
-    Live market paper trading should only be available when the Watch tab
-    is using today's date or no date/latest mode.
-    """
-    if not replay_date:
-        return True
-
-    try:
-        selected = pd.to_datetime(replay_date, errors="coerce")
-        if pd.isna(selected):
-            return False
-
-        return selected.date() == datetime.now().date()
-    except Exception:
-        return False
-
 def _default_chart_state(range_key="1D"):
     return {
         "mode": "live",
@@ -327,7 +311,9 @@ def register_callbacks(
         timeframe_map,
         paper_trading_service=None,
         paper_state_cache=None,
+        market_calendar=None,
 ):
+    market_calendar = market_calendar or replay_service.market_calendar
     strategy_engine = StrategyEngine()
     strategy_overlay_service = StrategyOverlayService()
     bar_view_service = BarViewService()
@@ -343,25 +329,68 @@ def register_callbacks(
     # Strategy overlays are cached by StrategyOverlayService.
 
     def _trading_days_between(start_date, end_date):
-        start = pd.to_datetime(start_date, errors="coerce")
-        end = pd.to_datetime(end_date, errors="coerce")
+        try:
+            start = pd.to_datetime(start_date, errors="coerce")
+            end = pd.to_datetime(end_date, errors="coerce")
+            if pd.isna(start) or pd.isna(end):
+                return []
 
-        if pd.isna(start) or pd.isna(end):
+            if end < start:
+                start, end = end, start
+
+            last_completed = market_calendar.last_completed_session()
+            if end.date() > last_completed:
+                end = pd.Timestamp(last_completed)
+            if start.date() > last_completed:
+                return []
+            return market_calendar.sessions_in_range(start, end)
+        except Exception:
             return []
 
-        if end < start:
-            start, end = end, start
+    def _live_market_access():
+        allowed, message, market_status = market_calendar.live_access()
+        if allowed and not rt.is_connected():
+            return (
+                False,
+                "Live Market is unavailable because IBKR is disconnected.",
+                market_status,
+            )
+        return allowed, message, market_status
 
-        days = []
-        current = start.normalize()
+    def _is_live_market_available() -> bool:
+        allowed, _message, _status = _live_market_access()
+        return bool(allowed)
 
-        while current <= end.normalize():
-            if int(current.weekday()) < 5:
-                days.append(current.date().isoformat())
+    @app.callback(
+        Output("ib-connection-status", "children"),
+        Output("ib-connection-status", "className"),
+        Input("ib-connection-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
+    def update_ib_connection_status(_connection_tick):
+        status = rt.connection_status()
+        if status.get("connected"):
+            return "IBKR Connected", "connection-status connection-status-connected"
 
-            current = current + pd.Timedelta(days=1)
+        rt.start_in_background(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
+        refreshed = rt.connection_status()
+        if refreshed.get("connecting"):
+            return "IBKR Connecting...", "connection-status connection-status-connecting"
 
-        return days
+        return (
+            "IBKR Offline · Start TWS or IB Gateway",
+            "connection-status connection-status-offline",
+        )
+
+    @app.callback(
+        Output("replay-date", "max_date_allowed"),
+        Output("replay-end-date", "max_date_allowed"),
+        Input("market-status-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
+    def sync_latest_completed_replay_date(_market_tick):
+        latest_session = market_calendar.last_completed_session().isoformat()
+        return latest_session, latest_session
 
     def _strategy_docs_dir() -> Path:
         return Path(__file__).resolve().parent / "docs"
@@ -605,6 +634,7 @@ def register_callbacks(
             if (activeTab !== "watch") {
                 return [
                     dash_clientside.no_update,
+                    dash_clientside.no_update,
                     dash_clientside.no_update
                 ];
             }
@@ -624,6 +654,7 @@ def register_callbacks(
 
             return [
                 "watch-loading-overlay",
+                false,
                 {
                     nonce: nonce,
                     symbol: symbol || "MSFT",
@@ -636,6 +667,7 @@ def register_callbacks(
         }
         """,
         Output("watch-loading-overlay", "className", allow_duplicate=True),
+        Output("watch-loading-progress-interval", "disabled", allow_duplicate=True),
         Output("watch-load-request", "data", allow_duplicate=True),
         Input("main-tabs", "value"),
         Input("watch-symbol-dropdown", "value"),
@@ -657,6 +689,7 @@ def register_callbacks(
         Output("replay-slider", "max", allow_duplicate=True),
         Output("replay-slider", "value", allow_duplicate=True),
         Output("watch-loading-overlay", "className", allow_duplicate=True),
+        Output("watch-loading-progress-interval", "disabled", allow_duplicate=True),
         Output("replay-render-trigger", "data", allow_duplicate=True),
         Input("watch-load-request", "data"),
         State("replay-speed", "value"),
@@ -666,16 +699,19 @@ def register_callbacks(
     )
     def load_watch_symbol_from_request(load_request, replay_speed, active_tab, render_trigger):
         if active_tab != "watch":
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         if not load_request:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         symbol = (load_request.get("symbol") or DEFAULT_SYMBOL).upper().strip()
         replay_date = load_request.get("replay_date")
         replay_end_date = load_request.get("replay_end_date") or replay_date
         display_timeframe = load_request.get("timeframe") or "1 min"
         load_mode = load_request.get("load_mode") or "single"
+        request_id = replay_service.claim_load_request(
+            load_request.get("nonce", 0)
+        )
 
         try:
             if load_mode == "range":
@@ -684,10 +720,11 @@ def register_callbacks(
                 if not trading_days:
                     render_trigger = int(render_trigger or 0) + 1
                     return (
-                        "No weekday trading days found in selected replay range.",
+                        "No completed NYSE sessions found in selected replay range.",
                         100,
                         1,
                         "watch-loading-overlay hidden",
+                        True,
                         render_trigger,
                     )
 
@@ -717,6 +754,7 @@ def register_callbacks(
                         no_update,
                         no_update,
                         "watch-loading-overlay hidden",
+                        True,
                         no_update,
                     )
 
@@ -726,7 +764,10 @@ def register_callbacks(
                     end_date=replay_end_date,
                     timeframe="auto",
                     speed=replay_speed or 1,
+                    request_id=request_id,
                 )
+                if not replay_service.is_load_request_current(request_id):
+                    raise ReplayLoadCancelled()
 
                 info = replay_service.info()
                 max_idx = max(1, int(info.get("max_index", len(stitched))))
@@ -736,38 +777,67 @@ def register_callbacks(
                 return (
                     (
                         f"Loaded {symbol} replay range {replay_date} → {replay_end_date} · "
-                        f"{len(trading_days)} weekdays requested · {len(stitched):,} source bars · "
+                        f"{len(trading_days)} market sessions · {len(stitched):,} source bars · "
                         f"source {replay_service.current_timeframe} · display {display_timeframe}."
                     ),
                     max_idx,
                     idx,
                     "watch-loading-overlay hidden",
+                    True,
                     render_trigger,
                 )
 
             # Single-day replay loading also uses raw 1-minute bars.
             # The Watch Interval dropdown only resamples display data.
+            replay_service.begin_load_progress(
+                1,
+                "1 min",
+                request_id=request_id,
+            )
             status, info = replay_service.load_replay(
                 symbol=symbol,
                 timeframe="1 min",
                 replay_date=replay_date,
                 speed=replay_speed or 1,
+                request_id=request_id,
             )
+            if not replay_service.is_load_request_current(request_id):
+                raise ReplayLoadCancelled()
 
             max_idx = max(1, int(info.get("max_index", 1)))
             idx = max(1, int(info.get("current_index", 1)))
             render_trigger = int(render_trigger or 0) + 1
+            replay_service.finish_load_progress(
+                max_idx,
+                f"Loaded {max_idx:,} one-minute bars.",
+                request_id=request_id,
+            )
 
             return (
                 f"{status} · display {display_timeframe}",
                 max_idx,
                 idx,
                 "watch-loading-overlay hidden",
+                True,
                 render_trigger,
             )
 
+        except ReplayLoadCancelled:
+            return (
+                no_update,
+                no_update,
+                no_update,
+                "watch-loading-overlay hidden",
+                True,
+                no_update,
+            )
         except Exception as exc:
             print(f"[REPLAY LOAD ERROR] {exc}", flush=True)
+            if replay_service.is_load_request_current(request_id):
+                replay_service.fail_load_progress(
+                    str(exc),
+                    request_id=request_id,
+                )
             render_trigger = int(render_trigger or 0) + 1
 
             return (
@@ -775,8 +845,41 @@ def register_callbacks(
                 100,
                 1,
                 "watch-loading-overlay hidden",
+                True,
                 render_trigger,
             )
+
+    @app.callback(
+        Output("watch-loading-text", "children"),
+        Output("watch-loading-progress-bar", "style"),
+        Output("watch-loading-progress-detail", "children"),
+        Input("watch-loading-progress-interval", "n_intervals"),
+        State("main-tabs", "value"),
+        prevent_initial_call=True,
+    )
+    def render_watch_loading_progress(_n_intervals, active_tab):
+        if active_tab != "watch":
+            return no_update, no_update, no_update
+
+        progress = replay_service.get_load_progress()
+        total_days = max(1, int(progress.get("total_days", 1) or 1))
+        completed_days = max(0, int(progress.get("completed_days", 0) or 0))
+        bars_loaded = max(0, int(progress.get("bars_loaded", 0) or 0))
+        elapsed_seconds = max(0, int(progress.get("elapsed_seconds", 0) or 0))
+        percent = min(100, round((completed_days / total_days) * 100))
+
+        # Keep a small animated segment visible while waiting for the first
+        # blocking IBKR response.
+        display_percent = percent if percent > 0 else 4
+        bar_style = {"width": f"{display_percent}%"}
+        message = str(progress.get("message") or "Loading replay data...")
+        source_timeframe = str(progress.get("source_timeframe") or "1 min")
+        detail = (
+            f"{completed_days}/{total_days} trading days · "
+            f"{bars_loaded:,} bars · {source_timeframe} source · "
+            f"{elapsed_seconds}s elapsed"
+        )
+        return message, bar_style, detail
 
     @app.callback(
         Output("watch-timeframe-dropdown", "options"),
@@ -2086,7 +2189,7 @@ def register_callbacks(
         Input("ui-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         prevent_initial_call=True,
     )
@@ -2123,7 +2226,7 @@ def register_callbacks(
 
             use_live_watch_data = (
                     price_source == "live"
-                    and _is_today_or_latest_replay_date(replay_date)
+                    and _is_live_market_available()
             )
             try:
                 replay_info_for_render = replay_service.info()
@@ -2367,7 +2470,7 @@ def register_callbacks(
         Input("ui-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         prevent_initial_call=True,
     )
@@ -2392,7 +2495,7 @@ def register_callbacks(
 
             use_live_watch_data = (
                     price_source == "live"
-                    and _is_today_or_latest_replay_date(replay_date)
+                    and _is_live_market_available()
             )
 
             watch_view = bar_view_service.build_watch_view(
@@ -2520,11 +2623,12 @@ def register_callbacks(
             return None, datetime.now(), "Replay Cursor"
 
         if source == "live":
-            if not _is_today_or_latest_replay_date(replay_date):
+            live_allowed, live_message, _market_status = _live_market_access()
+            if not live_allowed:
                 return (
                     None,
                     datetime.now(),
-                    "Live Market unavailable for historical dates",
+                    live_message,
                 )
 
             try:
@@ -2536,6 +2640,13 @@ def register_callbacks(
 
             if snap.last is None:
                 return None, snap.updated_at or datetime.now(), "Live Market"
+
+            if not market_calendar.is_quote_fresh(snap.updated_at, max_age_seconds=60):
+                return (
+                    None,
+                    snap.updated_at or datetime.now(),
+                    "Live Market quote is stale; wait for a fresh tick",
+                )
 
             return float(snap.last), snap.updated_at or datetime.now(), "Live Market"
 
@@ -2770,23 +2881,59 @@ def register_callbacks(
         )
 
     @app.callback(
+        Output("paper-price-source", "options"),
+        Output("paper-price-source", "value"),
+        Output("watch-market-status", "children"),
+        Input("market-status-interval", "n_intervals"),
+        Input("main-tabs", "value"),
+        State("paper-price-source", "value"),
+        prevent_initial_call=False,
+    )
+    def sync_live_market_guard(_market_tick, active_tab, current_source):
+        if active_tab != "watch":
+            return no_update, no_update, no_update
+
+        live_allowed, live_message, market_status = _live_market_access()
+        options = [
+            {"label": "Replay", "value": "replay"},
+            {
+                "label": "Live" if live_allowed else "Live (Market Closed)",
+                "value": "live",
+                "disabled": not live_allowed,
+            },
+        ]
+        selected = str(current_source or "replay").lower().strip()
+        if selected == "live" and not live_allowed:
+            selected = "replay"
+
+        if live_allowed:
+            banner = "NYSE market open · Live and Replay modes are available."
+        else:
+            replay_day = market_status.last_completed_session.strftime("%A, %b %d")
+            banner = f"{live_message} Showing Replay for {replay_day}."
+
+        return options, selected, banner
+
+    @app.callback(
         Output("paper-trade-status", "children", allow_duplicate=True),
         Input("paper-price-source", "value"),
-        Input("replay-date", "date"),
+        Input("market-status-interval", "n_intervals"),
         State("main-tabs", "value"),
         prevent_initial_call=True,
     )
-    def warn_live_source_for_historical_date(price_source, replay_date, active_tab):
+    def describe_live_market_guard(price_source, _market_tick, active_tab):
         if active_tab != "watch":
             return no_update
 
-        if price_source == "live" and not _is_today_or_latest_replay_date(replay_date):
-            return "Live Market paper trading is only available for today's date or latest mode."
+        live_allowed, live_message, market_status = _live_market_access()
+        if price_source == "live" and live_allowed:
+            return "Live Market paper trading enabled for the open NYSE session."
 
-        if price_source == "live":
-            return "Live Market paper trading enabled for today's/current data."
+        if not live_allowed:
+            replay_day = market_status.last_completed_session.strftime("%A, %b %d")
+            return f"{live_message} Replay is available for {replay_day}."
 
-        return "Replay Cursor paper trading enabled."
+        return "Replay Cursor paper trading enabled. Live Market is also available."
 
 
     @app.callback(
@@ -2798,7 +2945,7 @@ def register_callbacks(
         Input("replay-render-trigger", "data"),
         Input("ui-interval", "n_intervals"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         State("main-tabs", "value"),
         prevent_initial_call=False,

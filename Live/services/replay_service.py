@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Optional
+from threading import Lock, RLock
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
 
-from core.RealTime import RealTimeIB
 from core.ReplayModule import ReplayEngine
 from services.bar_store import BarStore
+from services.market_calendar_service import MarketCalendarService
+
+
+if TYPE_CHECKING:
+    from core.RealTime import RealTimeIB
 
 
 OHLCV_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
+
+
+class ReplayLoadCancelled(RuntimeError):
+    """Raised when a newer request supersedes an in-progress replay load."""
 
 
 class ReplayService:
@@ -30,11 +39,6 @@ class ReplayService:
         exists. A previous bad partial cache, for example 12 bars under a
         ("MSFT", "1 min", "2026-06-18") key, is invalidated and refreshed.
     """
-
-    # A normal US regular session is about 390 one-minute bars.
-    # Keep this slightly below 390 so an occasional missing bar does not force
-    # endless refreshes. Adjust later if you add half-day calendar support.
-    MIN_HISTORICAL_1MIN_ROWS = 360
 
     # Keep replay datasets responsive while retaining the finest useful source
     # interval for the selected date range. Display intervals may resample this
@@ -107,19 +111,167 @@ class ReplayService:
 
     def __init__(
         self,
-        rt: RealTimeIB,
+        rt: "RealTimeIB",
         engine: ReplayEngine,
         bar_store: Optional[BarStore] = None,
+        market_calendar: Optional[MarketCalendarService] = None,
     ):
         self.rt = rt
         self.engine = engine
         self.bar_store = bar_store or BarStore()
+        self.market_calendar = market_calendar or MarketCalendarService()
         self.memory_cache: dict[tuple[str, str, str], pd.DataFrame] = {}
 
         self.current_symbol: Optional[str] = None
         self.current_timeframe: str = "1 min"
         self.current_replay_date: Optional[str] = None
         self.current_replay_end_date: Optional[str] = None
+        self._load_request_lock = RLock()
+        self._active_load_request_id: Optional[str] = None
+        self._load_progress_lock = Lock()
+        self._load_progress = {
+            "active": False,
+            "status": "idle",
+            "completed_days": 0,
+            "total_days": 0,
+            "bars_loaded": 0,
+            "source_timeframe": "1 min",
+            "message": "Waiting to load replay data.",
+            "started_at": None,
+            "updated_at": None,
+        }
+
+    def claim_load_request(self, request_id: object) -> str:
+        """Make request_id the sole replay load allowed to update this session."""
+        normalized = str(request_id)
+        with self._load_request_lock:
+            self._active_load_request_id = normalized
+        return normalized
+
+    def is_load_request_current(self, request_id: object) -> bool:
+        if request_id is None:
+            return True
+        with self._load_request_lock:
+            return self._active_load_request_id == str(request_id)
+
+    def _require_current_load_request(self, request_id: object) -> None:
+        if not self.is_load_request_current(request_id):
+            raise ReplayLoadCancelled(
+                "Replay load was replaced by a newer request."
+            )
+
+    def begin_load_progress(
+        self,
+        total_days: int,
+        source_timeframe: str,
+        request_id: object = None,
+    ) -> None:
+        now = datetime.now()
+        with self._load_request_lock:
+            self._require_current_load_request(request_id)
+            with self._load_progress_lock:
+                self._load_progress = {
+                    "active": True,
+                    "status": "loading",
+                    "completed_days": 0,
+                    "total_days": max(1, int(total_days or 1)),
+                    "bars_loaded": 0,
+                    "source_timeframe": str(source_timeframe or "1 min"),
+                    "message": "Preparing replay request...",
+                    "started_at": now,
+                    "updated_at": now,
+                }
+
+    def update_load_progress(
+        self,
+        *,
+        completed_days: int,
+        bars_loaded: int,
+        message: str,
+        request_id: object = None,
+    ) -> None:
+        with self._load_request_lock:
+            self._require_current_load_request(request_id)
+            with self._load_progress_lock:
+                self._load_progress.update(
+                    {
+                        "completed_days": max(0, int(completed_days or 0)),
+                        "bars_loaded": max(0, int(bars_loaded or 0)),
+                        "message": str(message or "Loading replay data..."),
+                        "updated_at": datetime.now(),
+                    }
+                )
+
+    def finish_load_progress(
+        self,
+        bars_loaded: int,
+        message: str,
+        request_id: object = None,
+    ) -> None:
+        with self._load_request_lock:
+            self._require_current_load_request(request_id)
+            with self._load_progress_lock:
+                total_days = max(1, int(self._load_progress.get("total_days", 1)))
+                self._load_progress.update(
+                    {
+                        "active": False,
+                        "status": "complete",
+                        "completed_days": total_days,
+                        "bars_loaded": max(0, int(bars_loaded or 0)),
+                        "message": str(message or "Replay load complete."),
+                        "updated_at": datetime.now(),
+                    }
+                )
+
+    def fail_load_progress(self, message: str, request_id: object = None) -> None:
+        with self._load_request_lock:
+            self._require_current_load_request(request_id)
+            with self._load_progress_lock:
+                self._load_progress.update(
+                    {
+                        "active": False,
+                        "status": "error",
+                        "message": str(message or "Replay load failed."),
+                        "updated_at": datetime.now(),
+                    }
+                )
+
+    def get_load_progress(self) -> dict:
+        with self._load_progress_lock:
+            progress = dict(self._load_progress)
+
+        started_at = progress.pop("started_at", None)
+        progress.pop("updated_at", None)
+        progress["elapsed_seconds"] = (
+            max(0, int((datetime.now() - started_at).total_seconds()))
+            if isinstance(started_at, datetime)
+            else 0
+        )
+        return progress
+
+    def _install_replay_dataset(
+        self,
+        bars: pd.DataFrame | None,
+        *,
+        symbol: str,
+        timeframe: str,
+        replay_date: Optional[str],
+        replay_end_date: Optional[str],
+        speed: Optional[float],
+        request_id: object,
+    ) -> None:
+        """Atomically reject stale requests or install their replay dataset."""
+        with self._load_request_lock:
+            self._require_current_load_request(request_id)
+            self.current_symbol = symbol
+            self.current_timeframe = timeframe
+            self.current_replay_date = replay_date
+            self.current_replay_end_date = replay_end_date
+            self.engine.reset()
+            if bars is not None and not bars.empty:
+                self.engine.load_from_df(bars)
+            if speed is not None:
+                self.engine.set_speed(speed)
 
     # ------------------------------------------------------------------
     # Cache keys / cache controls
@@ -191,17 +343,15 @@ class ReplayService:
         return df
 
     def _session_bounds_for_date(self, replay_date) -> tuple[pd.Timestamp, pd.Timestamp]:
-        selected = pd.to_datetime(replay_date, errors="coerce")
+        selected = replay_date or self.market_calendar.last_completed_session()
+        session_start, session_end = self.market_calendar.session_bounds(selected)
 
-        if pd.isna(selected):
-            selected = pd.Timestamp.now()
-
-        selected = selected.normalize()
-
-        session_start = selected.replace(hour=9, minute=30, second=0, microsecond=0)
-        session_end = selected.replace(hour=16, minute=0, second=0, microsecond=0)
-
-        return session_start, session_end
+        # IB historical bars are normalized to exchange-local, timezone-naive
+        # timestamps throughout this project.
+        return (
+            pd.Timestamp(session_start).tz_localize(None),
+            pd.Timestamp(session_end).tz_localize(None),
+        )
 
     def _filter_regular_session(self, bars: pd.DataFrame | None, replay_date) -> pd.DataFrame:
         df = self._normalize_replay_bars(bars)
@@ -223,7 +373,7 @@ class ReplayService:
         if pd.isna(selected):
             return False
 
-        return selected.date() < pd.Timestamp.now().date()
+        return selected.date() < self.market_calendar.exchange_now().date()
 
     def _should_validate_full_session(
         self,
@@ -252,14 +402,20 @@ class ReplayService:
             (True, reason) if the cache is safe to use
             (False, reason) if it should be invalidated/refetched
         """
-        min_rows = int(min_rows or self.MIN_HISTORICAL_1MIN_ROWS)
-
         df = self._filter_regular_session(bars, replay_date)
 
         if df.empty:
             return False, "empty regular-session cache"
 
         session_start, session_end = self._session_bounds_for_date(replay_date)
+
+        if min_rows is None:
+            scheduled_minutes = max(
+                1,
+                int((session_end - session_start).total_seconds() // 60),
+            )
+            min_rows = max(1, scheduled_minutes - 30)
+        min_rows = int(min_rows)
 
         first_time = df["time"].min()
         last_time = df["time"].max()
@@ -316,7 +472,7 @@ class ReplayService:
 
             start_dt = start_ts.normalize().to_pydatetime()
 
-            today = datetime.now().date()
+            today = self.market_calendar.exchange_now().date()
             if start_dt.date() > today:
                 raise ValueError("Replay date cannot be in the future.")
 
@@ -538,6 +694,7 @@ class ReplayService:
         timeframe: str = "1 min",
         speed: Optional[float] = 1,
         force_refresh: bool = False,
+        request_id: object = None,
     ) -> pd.DataFrame:
         """
         Load and stitch a replay range into one active replay dataset.
@@ -554,6 +711,7 @@ class ReplayService:
               read from the same multi-day dataset.
         """
 
+        self._require_current_load_request(request_id)
         symbol = self.rt._sanitize_symbol(symbol)
 
         start = pd.to_datetime(start_date, errors="coerce")
@@ -565,29 +723,48 @@ class ReplayService:
         if end < start:
             start, end = end, start
 
-        today = datetime.now().date()
-        if start.date() > today or end.date() > today:
+        exchange_today = self.market_calendar.exchange_now().date()
+        if start.date() > exchange_today or end.date() > exchange_today:
             raise ValueError("Replay date range cannot include future dates.")
 
-        days: list[str] = []
-        current = start.normalize()
+        last_completed = self.market_calendar.last_completed_session()
+        if end.date() > last_completed:
+            end = pd.Timestamp(last_completed)
 
-        while current <= end.normalize():
-            if int(current.weekday()) < 5:
-                days.append(current.date().isoformat())
-            current = current + pd.Timedelta(days=1)
+        if start.date() > last_completed:
+            raise ValueError(
+                "Replay requires a completed market session. "
+                f"The latest available session is {last_completed.isoformat()}."
+            )
+
+        days = self.market_calendar.sessions_in_range(start, end)
 
         if not days:
-            raise ValueError("No weekday trading days found in selected range.")
+            raise ValueError("No completed NYSE trading sessions found in selected range.")
 
         requested_timeframe = str(timeframe or "auto").lower().strip()
 
         if requested_timeframe in {"auto", "automatic"}:
             requested_timeframe = self.choose_range_source_timeframe(len(days))
 
+        progress_timeframe = self.normalize_range_timeframe(requested_timeframe)
+        self._require_current_load_request(request_id)
+        self.begin_load_progress(
+            len(days),
+            progress_timeframe,
+            request_id=request_id,
+        )
+
         if requested_timeframe in {"1 day", "1d", "1 day bars"}:
             # Fetch the range once. Requesting each date separately with a
             # daily bar size would issue redundant one-year IB history calls.
+            self._require_current_load_request(request_id)
+            self.update_load_progress(
+                completed_days=0,
+                bars_loaded=0,
+                message="Requesting daily range from IBKR...",
+                request_id=request_id,
+            )
             start_dt = start.normalize().to_pydatetime()
             end_dt = (end.normalize() + pd.Timedelta(days=1)).to_pydatetime()
 
@@ -597,14 +774,13 @@ class ReplayService:
                 start_dt,
                 end_dt,
             )
+            self._require_current_load_request(request_id)
             daily = self._normalize_replay_bars(daily)
 
             if not daily.empty:
-                daily_dates = daily["time"].dt.normalize()
+                daily_dates = daily["time"].dt.date.astype(str)
                 daily = daily[
-                    (daily_dates >= start.normalize())
-                    & (daily_dates <= end.normalize())
-                    & (daily["time"].dt.weekday < 5)
+                    daily_dates.isin(days)
                 ].copy()
                 daily = (
                     daily.sort_values("time")
@@ -613,30 +789,47 @@ class ReplayService:
                 )
 
             if daily.empty:
+                self._require_current_load_request(request_id)
+                self.fail_load_progress(
+                    "No daily replay bars were returned.",
+                    request_id=request_id,
+                )
                 raise ValueError("No daily replay bars found for selected date range.")
 
-            self.current_symbol = symbol
-            self.current_timeframe = "1 day"
-            self.current_replay_date = start.date().isoformat()
-            self.current_replay_end_date = end.date().isoformat()
-
-            self.engine.reset()
-            self.engine.load_from_df(daily)
-
-            if speed is not None:
-                self.engine.set_speed(speed)
+            self._install_replay_dataset(
+                daily,
+                symbol=symbol,
+                timeframe="1 day",
+                replay_date=start.date().isoformat(),
+                replay_end_date=end.date().isoformat(),
+                speed=speed,
+                request_id=request_id,
+            )
 
             print(
                 f"[REPLAY RANGE DAILY] installed {len(daily):,} bars: "
                 f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()}.",
                 flush=True,
             )
+            self.finish_load_progress(
+                len(daily),
+                f"Loaded {len(daily):,} daily bars.",
+                request_id=request_id,
+            )
             return daily
 
         load_timeframe = self.normalize_range_timeframe(requested_timeframe)
         chunks: list[pd.DataFrame] = []
+        bars_loaded = 0
 
-        for day in days:
+        for day_number, day in enumerate(days, start=1):
+            self._require_current_load_request(request_id)
+            self.update_load_progress(
+                completed_days=day_number - 1,
+                bars_loaded=bars_loaded,
+                message=f"Requesting {day} from IBKR...",
+                request_id=request_id,
+            )
             try:
                 hist = self.get_history(
                     symbol=symbol,
@@ -644,14 +837,29 @@ class ReplayService:
                     replay_date=day,
                     force_refresh=force_refresh,
                 )
+                self._require_current_load_request(request_id)
+            except ReplayLoadCancelled:
+                raise
             except Exception as exc:
                 print(f"[REPLAY RANGE] {symbol} {day}: load failed: {exc}", flush=True)
+                self.update_load_progress(
+                    completed_days=day_number,
+                    bars_loaded=bars_loaded,
+                    message=f"Skipped {day}: request failed.",
+                    request_id=request_id,
+                )
                 continue
 
             day_bars = self._filter_regular_session(hist, day)
 
             if day_bars is None or day_bars.empty:
                 print(f"[REPLAY RANGE] {symbol} {day}: no regular-session bars.", flush=True)
+                self.update_load_progress(
+                    completed_days=day_number,
+                    bars_loaded=bars_loaded,
+                    message=f"Skipped {day}: no regular-session bars.",
+                    request_id=request_id,
+                )
                 continue
 
             if load_timeframe == "1 min" and self._is_historical_replay_date(day):
@@ -661,6 +869,12 @@ class ReplayService:
                         f"[REPLAY RANGE] {symbol} {day}: incomplete session skipped: {reason}",
                         flush=True,
                     )
+                    self.update_load_progress(
+                        completed_days=day_number,
+                        bars_loaded=bars_loaded,
+                        message=f"Skipped {day}: incomplete session.",
+                        request_id=request_id,
+                    )
                     continue
 
             print(
@@ -669,8 +883,20 @@ class ReplayService:
                 flush=True,
             )
             chunks.append(day_bars[OHLCV_COLUMNS].copy())
+            bars_loaded += len(day_bars)
+            self.update_load_progress(
+                completed_days=day_number,
+                bars_loaded=bars_loaded,
+                message=f"Loaded {day} ({len(day_bars):,} bars).",
+                request_id=request_id,
+            )
 
         if not chunks:
+            self._require_current_load_request(request_id)
+            self.fail_load_progress(
+                "No replay bars were found in the selected range.",
+                request_id=request_id,
+            )
             raise ValueError("No replay bars found for selected date range.")
 
         stitched = pd.concat(chunks, ignore_index=True)
@@ -680,22 +906,27 @@ class ReplayService:
         if stitched.empty:
             raise ValueError("Replay date range became empty after cleaning.")
 
-        self.current_symbol = symbol
-        self.current_timeframe = load_timeframe
-        self.current_replay_date = start.date().isoformat()
-        self.current_replay_end_date = end.date().isoformat()
-
-        self.engine.reset()
-        self.engine.load_from_df(stitched)
-
-        if speed is not None:
-            self.engine.set_speed(speed)
+        self._install_replay_dataset(
+            stitched,
+            symbol=symbol,
+            timeframe=load_timeframe,
+            replay_date=start.date().isoformat(),
+            replay_end_date=end.date().isoformat(),
+            speed=speed,
+            request_id=request_id,
+        )
 
         print(
             f"[REPLAY RANGE] installed stitched dataset: "
             f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()} "
             f"{len(stitched):,} {load_timeframe} bars.",
             flush=True,
+        )
+
+        self.finish_load_progress(
+            len(stitched),
+            f"Loaded {len(stitched):,} {load_timeframe} bars.",
+            request_id=request_id,
         )
 
         return stitched
@@ -711,13 +942,40 @@ class ReplayService:
         speed: Optional[float] = None,
         force_refresh: bool = False,
         force_reload: Optional[bool] = None,
+        request_id: object = None,
     ) -> tuple[str, dict]:
         # force_reload is kept for backwards compatibility with older callbacks.
         if force_reload is not None:
             force_refresh = force_reload
 
+        self._require_current_load_request(request_id)
         symbol = self.rt._sanitize_symbol(symbol)
         timeframe = timeframe or "1 min"
+        requested_replay_date = replay_date
+        adjustment = ""
+
+        if replay_date:
+            selected = pd.to_datetime(replay_date, errors="coerce")
+            if pd.isna(selected):
+                raise ValueError(f"Invalid replay date: {replay_date}")
+
+            exchange_today = self.market_calendar.exchange_now().date()
+            if selected.date() > exchange_today:
+                raise ValueError("Replay date cannot be in the future.")
+
+            last_completed = self.market_calendar.last_completed_session()
+            if selected.date() == exchange_today and selected.date() != last_completed:
+                replay_date = last_completed.isoformat()
+            elif not self.market_calendar.is_session(selected.date()):
+                replay_date = self.market_calendar.session_on_or_before(
+                    selected.date()
+                ).isoformat()
+
+            if replay_date != requested_replay_date:
+                adjustment = (
+                    f" Requested {requested_replay_date}; using last completed "
+                    f"session {replay_date}."
+                )
 
         hist = self.get_history(
             symbol=symbol,
@@ -725,21 +983,26 @@ class ReplayService:
             replay_date=replay_date,
             force_refresh=force_refresh,
         )
+        self._require_current_load_request(request_id)
 
         hist = self._prepare_history_for_replay_date(hist, replay_date)
 
-        self.current_symbol = symbol
-        self.current_timeframe = timeframe
-        self.current_replay_date = replay_date
-        self.current_replay_end_date = replay_date
-
         if hist is None or hist.empty:
-            self.engine.reset()
-            if speed is not None:
-                self.engine.set_speed(speed)
+            self._install_replay_dataset(
+                hist,
+                symbol=symbol,
+                timeframe=timeframe,
+                replay_date=replay_date,
+                replay_end_date=replay_date,
+                speed=speed,
+                request_id=request_id,
+            )
 
             date_label = replay_date or "latest"
-            return f"No replay history returned for {symbol} ({timeframe}, {date_label})", {
+            return (
+                f"No replay history returned for {symbol} "
+                f"({timeframe}, {date_label}).{adjustment}"
+            ), {
                 "playing": False,
                 "speed": self.engine.speed,
                 "current_index": 1,
@@ -752,15 +1015,20 @@ class ReplayService:
             if not ok:
                 warning = f" · WARNING incomplete session: {reason}"
 
-        self.engine.reset()
-        self.engine.load_from_df(hist)
-
-        if speed is not None:
-            self.engine.set_speed(speed)
+        self._install_replay_dataset(
+            hist,
+            symbol=symbol,
+            timeframe=timeframe,
+            replay_date=replay_date,
+            replay_end_date=replay_date,
+            speed=speed,
+            request_id=request_id,
+        )
 
         date_label = replay_date or "latest"
         return (
-            f"Replay loaded for {symbol} ({timeframe}, {date_label}, {len(hist)} bars){warning}",
+            f"Replay loaded for {symbol} ({timeframe}, {date_label}, "
+            f"{len(hist)} bars){warning}.{adjustment}",
             self.engine.info(),
         )
 

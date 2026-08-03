@@ -77,6 +77,8 @@ class RealTimeIB:
 
         self._lock = threading.RLock()
         self._runner_thread: Optional[threading.Thread] = None
+        self._starter_thread: Optional[threading.Thread] = None
+        self._starter_lock = threading.Lock()
         self._ib_thread_id: Optional[int] = None
         self._ready = threading.Event()
         self._stop = threading.Event()
@@ -171,6 +173,51 @@ class RealTimeIB:
     # ------------------------------------------------------------------
     # IB thread lifecycle
     # ------------------------------------------------------------------
+    def is_connected(self) -> bool:
+        try:
+            return bool(self.ib.isConnected())
+        except Exception:
+            return False
+
+    def connection_status(self) -> dict[str, object]:
+        """Return a non-blocking connection snapshot for the dashboard UI."""
+        starter_alive = bool(
+            self._starter_thread and self._starter_thread.is_alive()
+        )
+        return {
+            "connected": self.is_connected(),
+            "connecting": starter_alive,
+            "error": self._startup_error,
+        }
+
+    def start_in_background(
+        self,
+        symbol: str,
+        timeframe: str = "1 min",
+    ) -> bool:
+        """Start or retry IBKR without blocking Dash startup/request threads."""
+        if self.is_connected():
+            return False
+
+        with self._starter_lock:
+            if self._starter_thread and self._starter_thread.is_alive():
+                return False
+
+            def _start() -> None:
+                try:
+                    self.start(symbol, timeframe)
+                except Exception as exc:
+                    self._startup_error = str(exc)
+                    print(f"[IB BACKGROUND START ERROR] {exc}", flush=True)
+
+            self._starter_thread = threading.Thread(
+                target=_start,
+                name="RealTimeIBStarter",
+                daemon=True,
+            )
+            self._starter_thread.start()
+            return True
+
     def connect(self) -> None:
         """
         Connect on the current thread.
