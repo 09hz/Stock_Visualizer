@@ -128,7 +128,13 @@ class BarViewService:
 
         work = df.copy().set_index("time")
 
-        out = work.resample(rule).agg(
+        resample_kwargs = {}
+        if timeframe == "1 hour":
+            # US regular trading starts at 09:30. Anchor hourly candles to the
+            # session open instead of pandas' default 09:00 clock boundary.
+            resample_kwargs = {"origin": "start_day", "offset": "30min"}
+
+        out = work.resample(rule, **resample_kwargs).agg(
             {
                 "open": "first",
                 "high": "max",

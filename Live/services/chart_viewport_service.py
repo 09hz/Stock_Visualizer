@@ -121,6 +121,28 @@ class ChartViewportService:
 
         return [start_time, end_time]
 
+    def pad_x_range(self, bars: pd.DataFrame, x_range):
+        """Add half a candle of space at each horizontal edge."""
+
+        if not x_range:
+            return x_range
+
+        df = self.clean_bars_for_view(bars)
+        if df.empty:
+            return x_range
+
+        times = df["time"].drop_duplicates().sort_values()
+        intervals = times.diff().dropna()
+        intervals = intervals[intervals > pd.Timedelta(0)]
+
+        if intervals.empty:
+            # A single daily candle still needs enough room to be visible.
+            padding = pd.Timedelta(hours=12)
+        else:
+            padding = intervals.median() / 2
+
+        return [x_range[0] - padding, x_range[1] + padding]
+
     def fit_y_axis_to_visible_bars(
         self,
         fig: go.Figure,
@@ -166,7 +188,16 @@ class ChartViewportService:
         bars: pd.DataFrame,
         chart_state: dict | None,
         default_range: str = "1D",
+        range_bars: pd.DataFrame | None = None,
     ) -> go.Figure:
+        """
+        Apply the saved viewport without changing which candles are rendered.
+
+        ``bars`` contains the cursor-visible candles and remains the source for
+        y-axis fitting. ``range_bars`` may contain the complete loaded range so
+        replay can reserve the full horizontal space before every candle has
+        been revealed.
+        """
         state = chart_state or {}
         mode = state.get("mode", "live")
         range_key = self.safe_range_key(state.get("range_key"), default_range)
@@ -187,7 +218,27 @@ class ChartViewportService:
 
             return fig
 
-        x_range = self.visible_window_from_bars(bars, range_key)
+        range_source = range_bars
+        if range_source is None or range_source.empty:
+            range_source = bars
+
+        # For an intraday replay range containing several sessions, frame the
+        # complete session at the cursor instead of jumping ahead to the final
+        # loaded date. Daily replay uses MAX and therefore keeps every loaded
+        # date in view.
+        if range_key == "1D" and range_bars is not None and not range_bars.empty:
+            visible_df = self.clean_bars_for_view(bars)
+            complete_df = self.clean_bars_for_view(range_bars)
+            if not visible_df.empty and not complete_df.empty:
+                cursor_day = visible_df["time"].max().normalize()
+                current_session = complete_df[
+                    complete_df["time"].dt.normalize() == cursor_day
+                ]
+                if not current_session.empty:
+                    range_source = current_session
+
+        x_range = self.visible_window_from_bars(range_source, range_key)
+        x_range = self.pad_x_range(range_source, x_range)
 
         if x_range:
             fig.update_xaxes(range=x_range, fixedrange=False)

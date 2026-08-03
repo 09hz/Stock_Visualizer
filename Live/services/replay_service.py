@@ -36,6 +36,75 @@ class ReplayService:
     # endless refreshes. Adjust later if you add half-day calendar support.
     MIN_HISTORICAL_1MIN_ROWS = 360
 
+    # Keep replay datasets responsive while retaining the finest useful source
+    # interval for the selected date range. Display intervals may resample this
+    # source upward, but must never pretend to create finer bars from it.
+    MAX_RANGE_SOURCE_BARS = 5_000
+    RANGE_SOURCE_CANDIDATES = (
+        ("1 min", 390),
+        ("5 min", 78),
+        ("15 min", 26),
+        ("1 hour", 7),
+        ("1 day", 1),
+    )
+
+    @classmethod
+    def normalize_range_timeframe(cls, timeframe: str | None) -> str:
+        aliases = {
+            "1m": "1 min",
+            "1 minute": "1 min",
+            "1min": "1 min",
+            "5m": "5 min",
+            "5 mins": "5 min",
+            "15m": "15 min",
+            "15 mins": "15 min",
+            "1h": "1 hour",
+            "1d": "1 day",
+            "1 day bars": "1 day",
+        }
+        value = str(timeframe or "1 min").lower().strip()
+        return aliases.get(value, value)
+
+    @classmethod
+    def estimate_range_bar_count(
+        cls,
+        timeframe: str | None,
+        trading_day_count: int,
+    ) -> int:
+        """Conservatively estimate regular-session candles for validation."""
+
+        normalized = cls.normalize_range_timeframe(timeframe)
+        bars_per_day = dict(cls.RANGE_SOURCE_CANDIDATES).get(normalized)
+        if bars_per_day is None:
+            raise ValueError(f"Unsupported replay timeframe: {timeframe}")
+
+        return max(1, int(trading_day_count or 1)) * bars_per_day
+
+    @classmethod
+    def max_range_days_for_timeframe(cls, timeframe: str | None) -> int:
+        normalized = cls.normalize_range_timeframe(timeframe)
+        bars_per_day = dict(cls.RANGE_SOURCE_CANDIDATES).get(normalized)
+        if bars_per_day is None:
+            raise ValueError(f"Unsupported replay timeframe: {timeframe}")
+        return max(1, cls.MAX_RANGE_SOURCE_BARS // bars_per_day)
+
+    @classmethod
+    def choose_range_source_timeframe(
+        cls,
+        trading_day_count: int,
+        max_bars: int | None = None,
+    ) -> str:
+        """Return the finest source interval that fits the replay bar budget."""
+
+        day_count = max(1, int(trading_day_count or 1))
+        bar_budget = max(1, int(max_bars or cls.MAX_RANGE_SOURCE_BARS))
+
+        for timeframe, bars_per_day in cls.RANGE_SOURCE_CANDIDATES:
+            if day_count * bars_per_day <= bar_budget:
+                return timeframe
+
+        return "1 day"
+
     def __init__(
         self,
         rt: RealTimeIB,
@@ -475,9 +544,11 @@ class ReplayService:
 
         Important:
             * Weekends are skipped.
-            * Intraday Watch intervals use raw 1-minute replay bars.
-            * The 1-day Watch interval loads native daily bars so each trading
-              date is represented by exactly one source bar.
+            * Automatic mode chooses the finest source interval that stays
+              within the replay bar budget.
+            * Watch may resample that source into coarser display intervals.
+            * Native daily bars are used only when the selected range is too
+              large for a safe intraday source.
             * The stitched DataFrame is installed into ReplayEngine, so visible_bars(),
               current_bar(), info(), the replay slider, paper trading, and backtests all
               read from the same multi-day dataset.
@@ -509,7 +580,10 @@ class ReplayService:
         if not days:
             raise ValueError("No weekday trading days found in selected range.")
 
-        requested_timeframe = str(timeframe or "1 min").lower().strip()
+        requested_timeframe = str(timeframe or "auto").lower().strip()
+
+        if requested_timeframe in {"auto", "automatic"}:
+            requested_timeframe = self.choose_range_source_timeframe(len(days))
 
         if requested_timeframe in {"1 day", "1d", "1 day bars"}:
             # Fetch the range once. Requesting each date separately with a
@@ -559,9 +633,7 @@ class ReplayService:
             )
             return daily
 
-        # The replay engine uses 1-minute source bars. Display intervals are handled
-        # later by Watch chart rendering / BarViewService resampling.
-        load_timeframe = "1 min"
+        load_timeframe = self.normalize_range_timeframe(requested_timeframe)
         chunks: list[pd.DataFrame] = []
 
         for day in days:
@@ -582,7 +654,7 @@ class ReplayService:
                 print(f"[REPLAY RANGE] {symbol} {day}: no regular-session bars.", flush=True)
                 continue
 
-            if self._is_historical_replay_date(day):
+            if load_timeframe == "1 min" and self._is_historical_replay_date(day):
                 ok, reason = self._cache_is_complete_for_replay_day(day_bars, day)
                 if not ok:
                     print(
@@ -622,7 +694,7 @@ class ReplayService:
         print(
             f"[REPLAY RANGE] installed stitched dataset: "
             f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()} "
-            f"{len(stitched):,} bars.",
+            f"{len(stitched):,} {load_timeframe} bars.",
             flush=True,
         )
 

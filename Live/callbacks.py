@@ -552,6 +552,7 @@ def register_callbacks(
         Input("watch-range-5y", "n_clicks"),
         Input("watch-range-max", "n_clicks"),
         Input("watch-timeframe-dropdown", "value"),
+        Input("watch-load-request", "data"),
         Input("watch-chart", "relayoutData"),
         State("watch-chart-state", "data"),
         prevent_initial_call=True,
@@ -562,9 +563,17 @@ def register_callbacks(
         trigger_id = ctx.triggered_id
 
         if trigger_id == "watch-timeframe-dropdown":
-            timeframe = str(args[-3] or "1 min").lower().strip()
+            timeframe = str(args[-4] or "1 min").lower().strip()
             # A daily Watch candle represents each loaded replay date. Show the
             # complete loaded range by default so no daily candles are omitted.
+            range_key = "MAX" if timeframe in {"1 day", "1d"} else "1D"
+            return _default_chart_state(range_key)
+
+        if trigger_id == "watch-load-request":
+            load_request = args[-3] or {}
+            timeframe = str(
+                load_request.get("timeframe") or args[-4] or "1 min"
+            ).lower().strip()
             range_key = "MAX" if timeframe in {"1 day", "1d"} else "1D"
             return _default_chart_state(range_key)
 
@@ -682,15 +691,40 @@ def register_callbacks(
                         render_trigger,
                     )
 
+                estimated_bars = replay_service.estimate_range_bar_count(
+                    display_timeframe,
+                    len(trading_days),
+                )
+                if estimated_bars > replay_service.MAX_RANGE_SOURCE_BARS:
+                    max_days = replay_service.max_range_days_for_timeframe(
+                        display_timeframe
+                    )
+                    suggested_timeframe = (
+                        replay_service.choose_range_source_timeframe(
+                            len(trading_days)
+                        )
+                    )
+                    return (
+                        (
+                            f"Warning: {display_timeframe} across "
+                            f"{len(trading_days)} trading days would create about "
+                            f"{estimated_bars:,} bars. The limit is "
+                            f"{replay_service.MAX_RANGE_SOURCE_BARS:,}. "
+                            f"Choose {suggested_timeframe} or a coarser interval, "
+                            f"or reduce the range to {max_days} trading days. "
+                            "The existing replay was not changed."
+                        ),
+                        no_update,
+                        no_update,
+                        "watch-loading-overlay hidden",
+                        no_update,
+                    )
+
                 stitched = replay_service.load_date_range(
                     symbol=symbol,
                     start_date=replay_date,
                     end_date=replay_end_date,
-                    timeframe=(
-                        "1 day"
-                        if str(display_timeframe).lower().strip() in {"1 day", "1d"}
-                        else "1 min"
-                    ),
+                    timeframe="auto",
                     speed=replay_speed or 1,
                 )
 
@@ -703,7 +737,7 @@ def register_callbacks(
                     (
                         f"Loaded {symbol} replay range {replay_date} → {replay_end_date} · "
                         f"{len(trading_days)} weekdays requested · {len(stitched):,} source bars · "
-                        f"display {display_timeframe}."
+                        f"source {replay_service.current_timeframe} · display {display_timeframe}."
                     ),
                     max_idx,
                     idx,
@@ -743,6 +777,64 @@ def register_callbacks(
                 "watch-loading-overlay hidden",
                 render_trigger,
             )
+
+    @app.callback(
+        Output("watch-timeframe-dropdown", "options"),
+        Output("watch-timeframe-dropdown", "value"),
+        Input("watch-status", "children"),
+        State("watch-timeframe-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_watch_timeframe_options(_watch_status, selected_timeframe):
+        """Disable display intervals finer than the loaded replay source."""
+
+        timeframe_options = (
+            ("1 Min", "1 min"),
+            ("5 Min", "5 min"),
+            ("15 Min", "15 min"),
+            ("1 Hour", "1 hour"),
+            ("1 Day", "1 day"),
+        )
+        timeframe_rank = {
+            value: rank for rank, (_label, value) in enumerate(timeframe_options)
+        }
+        aliases = {
+            "1m": "1 min",
+            "5m": "5 min",
+            "5 mins": "5 min",
+            "15m": "15 min",
+            "15 mins": "15 min",
+            "1h": "1 hour",
+            "1d": "1 day",
+        }
+
+        source = str(replay_service.current_timeframe or "1 min").lower().strip()
+        source = aliases.get(source, source)
+        if source not in timeframe_rank:
+            source = "1 min"
+
+        selected = str(selected_timeframe or source).lower().strip()
+        selected = aliases.get(selected, selected)
+        if (
+            selected not in timeframe_rank
+            or timeframe_rank[selected] < timeframe_rank[source]
+        ):
+            selected = source
+
+        source_rank = timeframe_rank[source]
+        options = [
+            {
+                "label": (
+                    f"{label} (range too large)"
+                    if timeframe_rank[value] < source_rank
+                    else label
+                ),
+                "value": value,
+                "disabled": timeframe_rank[value] < source_rank,
+            }
+            for label, value in timeframe_options
+        ]
+        return options, selected
 
     @app.callback(
         Output("watch-status", "children", allow_duplicate=True),
@@ -2070,6 +2162,10 @@ def register_callbacks(
 
             visible = watch_view.visible_bars
             chart_bars = watch_view.chart_bars
+            full_chart_bars = bar_view_service.resample_bars(
+                watch_view.full_bars,
+                display_timeframe,
+            )
             current_price = watch_view.current_price
 
             source_label = watch_view.source
@@ -2194,6 +2290,7 @@ def register_callbacks(
                 chart_bars,
                 watch_chart_state,
                 default_range="1D",
+                range_bars=full_chart_bars,
             )
 
             state = watch_chart_state or {}
