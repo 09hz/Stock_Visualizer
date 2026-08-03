@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from threading import Lock
 from typing import Optional
 
 import pandas as pd
@@ -120,6 +121,88 @@ class ReplayService:
         self.current_timeframe: str = "1 min"
         self.current_replay_date: Optional[str] = None
         self.current_replay_end_date: Optional[str] = None
+        self._load_progress_lock = Lock()
+        self._load_progress = {
+            "active": False,
+            "status": "idle",
+            "completed_days": 0,
+            "total_days": 0,
+            "bars_loaded": 0,
+            "source_timeframe": "1 min",
+            "message": "Waiting to load replay data.",
+            "started_at": None,
+            "updated_at": None,
+        }
+
+    def begin_load_progress(self, total_days: int, source_timeframe: str) -> None:
+        now = datetime.now()
+        with self._load_progress_lock:
+            self._load_progress = {
+                "active": True,
+                "status": "loading",
+                "completed_days": 0,
+                "total_days": max(1, int(total_days or 1)),
+                "bars_loaded": 0,
+                "source_timeframe": str(source_timeframe or "1 min"),
+                "message": "Preparing replay request...",
+                "started_at": now,
+                "updated_at": now,
+            }
+
+    def update_load_progress(
+        self,
+        *,
+        completed_days: int,
+        bars_loaded: int,
+        message: str,
+    ) -> None:
+        with self._load_progress_lock:
+            self._load_progress.update(
+                {
+                    "completed_days": max(0, int(completed_days or 0)),
+                    "bars_loaded": max(0, int(bars_loaded or 0)),
+                    "message": str(message or "Loading replay data..."),
+                    "updated_at": datetime.now(),
+                }
+            )
+
+    def finish_load_progress(self, bars_loaded: int, message: str) -> None:
+        with self._load_progress_lock:
+            total_days = max(1, int(self._load_progress.get("total_days", 1)))
+            self._load_progress.update(
+                {
+                    "active": False,
+                    "status": "complete",
+                    "completed_days": total_days,
+                    "bars_loaded": max(0, int(bars_loaded or 0)),
+                    "message": str(message or "Replay load complete."),
+                    "updated_at": datetime.now(),
+                }
+            )
+
+    def fail_load_progress(self, message: str) -> None:
+        with self._load_progress_lock:
+            self._load_progress.update(
+                {
+                    "active": False,
+                    "status": "error",
+                    "message": str(message or "Replay load failed."),
+                    "updated_at": datetime.now(),
+                }
+            )
+
+    def get_load_progress(self) -> dict:
+        with self._load_progress_lock:
+            progress = dict(self._load_progress)
+
+        started_at = progress.pop("started_at", None)
+        progress.pop("updated_at", None)
+        progress["elapsed_seconds"] = (
+            max(0, int((datetime.now() - started_at).total_seconds()))
+            if isinstance(started_at, datetime)
+            else 0
+        )
+        return progress
 
     # ------------------------------------------------------------------
     # Cache keys / cache controls
@@ -585,9 +668,17 @@ class ReplayService:
         if requested_timeframe in {"auto", "automatic"}:
             requested_timeframe = self.choose_range_source_timeframe(len(days))
 
+        progress_timeframe = self.normalize_range_timeframe(requested_timeframe)
+        self.begin_load_progress(len(days), progress_timeframe)
+
         if requested_timeframe in {"1 day", "1d", "1 day bars"}:
             # Fetch the range once. Requesting each date separately with a
             # daily bar size would issue redundant one-year IB history calls.
+            self.update_load_progress(
+                completed_days=0,
+                bars_loaded=0,
+                message="Requesting daily range from IBKR...",
+            )
             start_dt = start.normalize().to_pydatetime()
             end_dt = (end.normalize() + pd.Timedelta(days=1)).to_pydatetime()
 
@@ -613,6 +704,7 @@ class ReplayService:
                 )
 
             if daily.empty:
+                self.fail_load_progress("No daily replay bars were returned.")
                 raise ValueError("No daily replay bars found for selected date range.")
 
             self.current_symbol = symbol
@@ -631,12 +723,22 @@ class ReplayService:
                 f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()}.",
                 flush=True,
             )
+            self.finish_load_progress(
+                len(daily),
+                f"Loaded {len(daily):,} daily bars.",
+            )
             return daily
 
         load_timeframe = self.normalize_range_timeframe(requested_timeframe)
         chunks: list[pd.DataFrame] = []
+        bars_loaded = 0
 
-        for day in days:
+        for day_number, day in enumerate(days, start=1):
+            self.update_load_progress(
+                completed_days=day_number - 1,
+                bars_loaded=bars_loaded,
+                message=f"Requesting {day} from IBKR...",
+            )
             try:
                 hist = self.get_history(
                     symbol=symbol,
@@ -646,12 +748,22 @@ class ReplayService:
                 )
             except Exception as exc:
                 print(f"[REPLAY RANGE] {symbol} {day}: load failed: {exc}", flush=True)
+                self.update_load_progress(
+                    completed_days=day_number,
+                    bars_loaded=bars_loaded,
+                    message=f"Skipped {day}: request failed.",
+                )
                 continue
 
             day_bars = self._filter_regular_session(hist, day)
 
             if day_bars is None or day_bars.empty:
                 print(f"[REPLAY RANGE] {symbol} {day}: no regular-session bars.", flush=True)
+                self.update_load_progress(
+                    completed_days=day_number,
+                    bars_loaded=bars_loaded,
+                    message=f"Skipped {day}: no regular-session bars.",
+                )
                 continue
 
             if load_timeframe == "1 min" and self._is_historical_replay_date(day):
@@ -661,6 +773,11 @@ class ReplayService:
                         f"[REPLAY RANGE] {symbol} {day}: incomplete session skipped: {reason}",
                         flush=True,
                     )
+                    self.update_load_progress(
+                        completed_days=day_number,
+                        bars_loaded=bars_loaded,
+                        message=f"Skipped {day}: incomplete session.",
+                    )
                     continue
 
             print(
@@ -669,8 +786,15 @@ class ReplayService:
                 flush=True,
             )
             chunks.append(day_bars[OHLCV_COLUMNS].copy())
+            bars_loaded += len(day_bars)
+            self.update_load_progress(
+                completed_days=day_number,
+                bars_loaded=bars_loaded,
+                message=f"Loaded {day} ({len(day_bars):,} bars).",
+            )
 
         if not chunks:
+            self.fail_load_progress("No replay bars were found in the selected range.")
             raise ValueError("No replay bars found for selected date range.")
 
         stitched = pd.concat(chunks, ignore_index=True)
@@ -696,6 +820,11 @@ class ReplayService:
             f"{symbol} {start.date().isoformat()} -> {end.date().isoformat()} "
             f"{len(stitched):,} {load_timeframe} bars.",
             flush=True,
+        )
+
+        self.finish_load_progress(
+            len(stitched),
+            f"Loaded {len(stitched):,} {load_timeframe} bars.",
         )
 
         return stitched

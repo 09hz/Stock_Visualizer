@@ -133,6 +133,14 @@ app.layout = html.Div(
         # from the general UI interval.
         dcc.Interval(id="replay-clock", interval=250, n_intervals=0),
 
+        # Polls range-loading progress only while a Watch request is active.
+        dcc.Interval(
+            id="watch-loading-progress-interval",
+            interval=400,
+            n_intervals=0,
+            disabled=True,
+        ),
+
         # Replay render trigger. Buttons/clock bump this store so the Watch chart
         # redraws without the slider callback fighting the clock.
         dcc.Store(id="replay-render-trigger", data=0),

@@ -605,6 +605,7 @@ def register_callbacks(
             if (activeTab !== "watch") {
                 return [
                     dash_clientside.no_update,
+                    dash_clientside.no_update,
                     dash_clientside.no_update
                 ];
             }
@@ -624,6 +625,7 @@ def register_callbacks(
 
             return [
                 "watch-loading-overlay",
+                false,
                 {
                     nonce: nonce,
                     symbol: symbol || "MSFT",
@@ -636,6 +638,7 @@ def register_callbacks(
         }
         """,
         Output("watch-loading-overlay", "className", allow_duplicate=True),
+        Output("watch-loading-progress-interval", "disabled", allow_duplicate=True),
         Output("watch-load-request", "data", allow_duplicate=True),
         Input("main-tabs", "value"),
         Input("watch-symbol-dropdown", "value"),
@@ -657,6 +660,7 @@ def register_callbacks(
         Output("replay-slider", "max", allow_duplicate=True),
         Output("replay-slider", "value", allow_duplicate=True),
         Output("watch-loading-overlay", "className", allow_duplicate=True),
+        Output("watch-loading-progress-interval", "disabled", allow_duplicate=True),
         Output("replay-render-trigger", "data", allow_duplicate=True),
         Input("watch-load-request", "data"),
         State("replay-speed", "value"),
@@ -666,10 +670,10 @@ def register_callbacks(
     )
     def load_watch_symbol_from_request(load_request, replay_speed, active_tab, render_trigger):
         if active_tab != "watch":
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         if not load_request:
-            return no_update, no_update, no_update, no_update, no_update
+            return no_update, no_update, no_update, no_update, no_update, no_update
 
         symbol = (load_request.get("symbol") or DEFAULT_SYMBOL).upper().strip()
         replay_date = load_request.get("replay_date")
@@ -688,6 +692,7 @@ def register_callbacks(
                         100,
                         1,
                         "watch-loading-overlay hidden",
+                        True,
                         render_trigger,
                     )
 
@@ -717,6 +722,7 @@ def register_callbacks(
                         no_update,
                         no_update,
                         "watch-loading-overlay hidden",
+                        True,
                         no_update,
                     )
 
@@ -742,11 +748,13 @@ def register_callbacks(
                     max_idx,
                     idx,
                     "watch-loading-overlay hidden",
+                    True,
                     render_trigger,
                 )
 
             # Single-day replay loading also uses raw 1-minute bars.
             # The Watch Interval dropdown only resamples display data.
+            replay_service.begin_load_progress(1, "1 min")
             status, info = replay_service.load_replay(
                 symbol=symbol,
                 timeframe="1 min",
@@ -757,17 +765,23 @@ def register_callbacks(
             max_idx = max(1, int(info.get("max_index", 1)))
             idx = max(1, int(info.get("current_index", 1)))
             render_trigger = int(render_trigger or 0) + 1
+            replay_service.finish_load_progress(
+                max_idx,
+                f"Loaded {max_idx:,} one-minute bars.",
+            )
 
             return (
                 f"{status} · display {display_timeframe}",
                 max_idx,
                 idx,
                 "watch-loading-overlay hidden",
+                True,
                 render_trigger,
             )
 
         except Exception as exc:
             print(f"[REPLAY LOAD ERROR] {exc}", flush=True)
+            replay_service.fail_load_progress(str(exc))
             render_trigger = int(render_trigger or 0) + 1
 
             return (
@@ -775,8 +789,41 @@ def register_callbacks(
                 100,
                 1,
                 "watch-loading-overlay hidden",
+                True,
                 render_trigger,
             )
+
+    @app.callback(
+        Output("watch-loading-text", "children"),
+        Output("watch-loading-progress-bar", "style"),
+        Output("watch-loading-progress-detail", "children"),
+        Input("watch-loading-progress-interval", "n_intervals"),
+        State("main-tabs", "value"),
+        prevent_initial_call=True,
+    )
+    def render_watch_loading_progress(_n_intervals, active_tab):
+        if active_tab != "watch":
+            return no_update, no_update, no_update
+
+        progress = replay_service.get_load_progress()
+        total_days = max(1, int(progress.get("total_days", 1) or 1))
+        completed_days = max(0, int(progress.get("completed_days", 0) or 0))
+        bars_loaded = max(0, int(progress.get("bars_loaded", 0) or 0))
+        elapsed_seconds = max(0, int(progress.get("elapsed_seconds", 0) or 0))
+        percent = min(100, round((completed_days / total_days) * 100))
+
+        # Keep a small animated segment visible while waiting for the first
+        # blocking IBKR response.
+        display_percent = percent if percent > 0 else 4
+        bar_style = {"width": f"{display_percent}%"}
+        message = str(progress.get("message") or "Loading replay data...")
+        source_timeframe = str(progress.get("source_timeframe") or "1 min")
+        detail = (
+            f"{completed_days}/{total_days} trading days · "
+            f"{bars_loaded:,} bars · {source_timeframe} source · "
+            f"{elapsed_seconds}s elapsed"
+        )
+        return message, bar_style, detail
 
     @app.callback(
         Output("watch-timeframe-dropdown", "options"),

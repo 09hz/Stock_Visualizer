@@ -616,17 +616,21 @@ control-box:hover {
     pointer-events: none !important;
 }
 
-.watch-loading-text {
-    padding: 16px 22px !important;
+.watch-loading-panel {
+    width: min(520px, calc(100% - 48px)) !important;
+    padding: 18px 22px !important;
     border: 1px solid rgba(44, 111, 173, 0.28) !important;
     border-radius: 12px !important;
     background: rgba(17, 19, 24, 0.96) !important;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45) !important;
+}
+
+.watch-loading-text {
     color: #4a8fc4 !important;
     font-family: 'JetBrains Mono', monospace !important;
     font-size: 13px !important;
     font-weight: 700 !important;
     letter-spacing: 0.4px !important;
-    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.45) !important;
 }
 
 .watch-loading-text::after {
@@ -643,6 +647,39 @@ control-box:hover {
     50% { content: ".."; }
     75% { content: "..."; }
     100% { content: ""; }
+}
+
+.watch-loading-progress-track {
+    height: 9px !important;
+    margin-top: 15px !important;
+    overflow: hidden !important;
+    border: 1px solid rgba(74, 143, 196, 0.24) !important;
+    border-radius: 999px !important;
+    background: rgba(4, 8, 13, 0.92) !important;
+}
+
+.watch-loading-progress-bar {
+    height: 100% !important;
+    min-width: 4% !important;
+    border-radius: inherit !important;
+    background: linear-gradient(90deg, #2563a6, #38bdf8, #2563a6) !important;
+    background-size: 200% 100% !important;
+    box-shadow: 0 0 16px rgba(56, 189, 248, 0.45) !important;
+    transition: width 0.25s ease !important;
+    animation: watchProgressShimmer 1.2s linear infinite !important;
+}
+
+.watch-loading-progress-detail {
+    margin-top: 10px !important;
+    color: #8798ad !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 11px !important;
+    letter-spacing: 0.2px !important;
+}
+
+@keyframes watchProgressShimmer {
+    from { background-position: 100% 0; }
+    to { background-position: -100% 0; }
 }
 
 /* =========================

@@ -698,7 +698,31 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                         id="watch-loading-overlay",
                         className="watch-loading-overlay",
                         children=[
-                            html.Div("Preparing replay data...", className="watch-loading-text"),
+                            html.Div(
+                                className="watch-loading-panel",
+                                children=[
+                                    html.Div(
+                                        "Preparing replay data...",
+                                        id="watch-loading-text",
+                                        className="watch-loading-text",
+                                    ),
+                                    html.Div(
+                                        className="watch-loading-progress-track",
+                                        children=[
+                                            html.Div(
+                                                id="watch-loading-progress-bar",
+                                                className="watch-loading-progress-bar",
+                                                style={"width": "0%"},
+                                            )
+                                        ],
+                                    ),
+                                    html.Div(
+                                        "Waiting for the first IBKR response...",
+                                        id="watch-loading-progress-detail",
+                                        className="watch-loading-progress-detail",
+                                    ),
+                                ],
+                            ),
                         ],
                     ),
                     dcc.Graph(
