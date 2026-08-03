@@ -83,6 +83,37 @@ body {
     opacity: 0.9;
 }
 
+.connection-status {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 12px;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+}
+
+.connection-status-connected {
+    border-color: rgba(63, 211, 140, 0.35);
+    background: rgba(63, 211, 140, 0.08);
+    color: #70e5a8;
+}
+
+.connection-status-connecting {
+    border-color: rgba(241, 196, 84, 0.35);
+    background: rgba(241, 196, 84, 0.08);
+    color: #f1c454;
+}
+
+.connection-status-offline {
+    border-color: rgba(255, 107, 107, 0.35);
+    background: rgba(255, 107, 107, 0.08);
+    color: #ff8a8a;
+}
+
 /* =========================
    MAIN TABS
 ========================= */

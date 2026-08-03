@@ -29,6 +29,7 @@ from core.BackTestEngine import BackTestEngine
 from services.strategy_overlay_service import StrategyOverlayService
 from services.bar_view_service import BarViewService
 from services.chart_viewport_service import ChartViewportService
+from services.replay_service import ReplayLoadCancelled
 
 from renderers.watch_chart_renderer import WatchChartRenderer
 from renderers.strategy_overlay_renderer import StrategyOverlayRenderer
@@ -361,6 +362,27 @@ def register_callbacks(
         return bool(allowed)
 
     @app.callback(
+        Output("ib-connection-status", "children"),
+        Output("ib-connection-status", "className"),
+        Input("ib-connection-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
+    def update_ib_connection_status(_connection_tick):
+        status = rt.connection_status()
+        if status.get("connected"):
+            return "IBKR Connected", "connection-status connection-status-connected"
+
+        rt.start_in_background(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
+        refreshed = rt.connection_status()
+        if refreshed.get("connecting"):
+            return "IBKR Connecting...", "connection-status connection-status-connecting"
+
+        return (
+            "IBKR Offline · Start TWS or IB Gateway",
+            "connection-status connection-status-offline",
+        )
+
+    @app.callback(
         Output("replay-date", "max_date_allowed"),
         Output("replay-end-date", "max_date_allowed"),
         Input("market-status-interval", "n_intervals"),
@@ -687,6 +709,9 @@ def register_callbacks(
         replay_end_date = load_request.get("replay_end_date") or replay_date
         display_timeframe = load_request.get("timeframe") or "1 min"
         load_mode = load_request.get("load_mode") or "single"
+        request_id = replay_service.claim_load_request(
+            load_request.get("nonce", 0)
+        )
 
         try:
             if load_mode == "range":
@@ -739,7 +764,10 @@ def register_callbacks(
                     end_date=replay_end_date,
                     timeframe="auto",
                     speed=replay_speed or 1,
+                    request_id=request_id,
                 )
+                if not replay_service.is_load_request_current(request_id):
+                    raise ReplayLoadCancelled()
 
                 info = replay_service.info()
                 max_idx = max(1, int(info.get("max_index", len(stitched))))
@@ -761,13 +789,20 @@ def register_callbacks(
 
             # Single-day replay loading also uses raw 1-minute bars.
             # The Watch Interval dropdown only resamples display data.
-            replay_service.begin_load_progress(1, "1 min")
+            replay_service.begin_load_progress(
+                1,
+                "1 min",
+                request_id=request_id,
+            )
             status, info = replay_service.load_replay(
                 symbol=symbol,
                 timeframe="1 min",
                 replay_date=replay_date,
                 speed=replay_speed or 1,
+                request_id=request_id,
             )
+            if not replay_service.is_load_request_current(request_id):
+                raise ReplayLoadCancelled()
 
             max_idx = max(1, int(info.get("max_index", 1)))
             idx = max(1, int(info.get("current_index", 1)))
@@ -775,6 +810,7 @@ def register_callbacks(
             replay_service.finish_load_progress(
                 max_idx,
                 f"Loaded {max_idx:,} one-minute bars.",
+                request_id=request_id,
             )
 
             return (
@@ -786,9 +822,22 @@ def register_callbacks(
                 render_trigger,
             )
 
+        except ReplayLoadCancelled:
+            return (
+                no_update,
+                no_update,
+                no_update,
+                "watch-loading-overlay hidden",
+                True,
+                no_update,
+            )
         except Exception as exc:
             print(f"[REPLAY LOAD ERROR] {exc}", flush=True)
-            replay_service.fail_load_progress(str(exc))
+            if replay_service.is_load_request_current(request_id):
+                replay_service.fail_load_progress(
+                    str(exc),
+                    request_id=request_id,
+                )
             render_trigger = int(render_trigger or 0) + 1
 
             return (

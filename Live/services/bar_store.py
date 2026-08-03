@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import RLock
 from typing import Optional
+from uuid import uuid4
 
 import pandas as pd
 
@@ -20,6 +22,7 @@ class BarStore:
     def __init__(self, root_dir: str | Path = "cache/replay"):
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = RLock()
 
     def _safe_symbol(self, symbol: str) -> str:
         return (symbol or "").upper().strip().replace("/", "_")
@@ -39,11 +42,11 @@ class BarStore:
     def read(self, symbol: str, timeframe: str, replay_date: Optional[str]) -> Optional[pd.DataFrame]:
         path = self.path_for(symbol, timeframe, replay_date)
 
-        if not path.exists():
-            return None
-
         try:
-            df = pd.read_parquet(path)
+            with self._lock:
+                if not path.exists():
+                    return None
+                df = pd.read_parquet(path)
             if df is None or df.empty:
                 return None
             return df
@@ -58,8 +61,15 @@ class BarStore:
         path = self.path_for(symbol, timeframe, replay_date)
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            df.to_parquet(path, index=False)
+            with self._lock:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+                try:
+                    df.to_parquet(temp_path, index=False)
+                    temp_path.replace(path)
+                finally:
+                    if temp_path.exists():
+                        temp_path.unlink()
             print(f"[BAR STORE WRITE] {path}", flush=True)
         except Exception as exc:
             print(f"[BAR STORE WRITE ERROR] {path}: {exc}", flush=True)
