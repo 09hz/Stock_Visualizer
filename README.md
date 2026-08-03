@@ -265,7 +265,7 @@ included below for contributors who want dependency isolation.
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/09hz/Stock_Visualizer.git
 cd Stock_Visualizer
 ```
 
