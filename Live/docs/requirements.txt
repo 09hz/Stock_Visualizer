@@ -7,3 +7,4 @@ plotly
 dash
 networkx
 pyarrow
+exchange_calendars

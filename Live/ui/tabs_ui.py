@@ -548,7 +548,19 @@ def _build_watch_workspace_tabs():
     )
 
 
-def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_index=100, default_date=None):
+def build_watch_tab(
+    symbol_options,
+    default_symbol,
+    default_speed=1,
+    default_index=100,
+    default_date=None,
+    disabled_replay_days=None,
+    max_replay_date=None,
+):
+    if disabled_replay_days is None:
+        disabled_replay_days = make_disabled_weekend_days()
+    max_replay_date = max_replay_date or date.today()
+
     return html.Div(
         className="tab-panel watch-tab-panel",
         children=[
@@ -617,8 +629,8 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 id="replay-date",
                                 date=default_date,
                                 display_format="MM/DD/YYYY",
-                                max_date_allowed=date.today(),
-                                disabled_days=make_disabled_weekend_days(),
+                                max_date_allowed=max_replay_date,
+                                disabled_days=disabled_replay_days,
                                 className="date-picker-dark",
                             ),
                         ],
@@ -631,8 +643,8 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
                                 id="replay-end-date",
                                 date=default_date,
                                 display_format="MM/DD/YYYY",
-                                max_date_allowed=date.today(),
-                                disabled_days=make_disabled_weekend_days(),
+                                max_date_allowed=max_replay_date,
+                                disabled_days=disabled_replay_days,
                                 className="date-picker-dark",
                             ),
                         ],
@@ -687,6 +699,7 @@ def build_watch_tab(symbol_options, default_symbol, default_speed=1, default_ind
             ),
             html.Div(id="watch-metrics-strip", className="metrics-strip"),
             html.Div(id="watch-status", className="status-text"),
+            html.Div(id="watch-market-status", className="status-text"),
             html.Div(
                 className="range-row chart-control-row",
                 children=make_chart_control_buttons("watch"),

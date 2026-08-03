@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 import asyncio
-from datetime import date
+from datetime import timedelta
 
 from dash import Dash, dcc, html
 
@@ -21,6 +21,7 @@ from config import (
 from core.RealTime import RealTimeIB, TIMEFRAME_MAP
 from core.ReplayModule import ReplayEngine
 from services.replay_service import ReplayService
+from services.market_calendar_service import MarketCalendarService
 from services.paper_cache import PaperStateCache
 from ui.tabs_ui import (
     build_dashboard_tab,
@@ -39,11 +40,24 @@ except Exception:
     RiskGuard = None
 
 
+market_calendar = MarketCalendarService()
+exchange_today = market_calendar.exchange_now().date()
+default_replay_date = market_calendar.last_completed_session().isoformat()
+max_replay_date = market_calendar.last_completed_session()
+disabled_replay_days = market_calendar.non_session_days(
+    exchange_today - timedelta(days=3650),
+    exchange_today + timedelta(days=365),
+)
+
 rt = RealTimeIB(host="127.0.0.1", port=4001)
 rt.start(DEFAULT_SYMBOL, DEFAULT_TIMEFRAME)
 
 replay_engine = ReplayEngine()
-replay_service = ReplayService(rt, replay_engine)
+replay_service = ReplayService(
+    rt,
+    replay_engine,
+    market_calendar=market_calendar,
+)
 
 paper_trading_service = None
 paper_state_cache = PaperStateCache(cache_dir="cache/paper")
@@ -105,7 +119,9 @@ app.layout = html.Div(
                             default_symbol=DEFAULT_SYMBOL,
                             default_speed=DEFAULT_REPLAY_SPEED,
                             default_index=DEFAULT_REPLAY_INDEX,
-                            default_date=date.today().isoformat(),
+                            default_date=default_replay_date,
+                            disabled_replay_days=disabled_replay_days,
+                            max_replay_date=max_replay_date,
                         )
                     ],
                 ),
@@ -132,6 +148,9 @@ app.layout = html.Div(
         # Dedicated replay heartbeat. This drives Play/Pause independently
         # from the general UI interval.
         dcc.Interval(id="replay-clock", interval=250, n_intervals=0),
+
+        # Refreshes Live-mode availability without redrawing on every UI tick.
+        dcc.Interval(id="market-status-interval", interval=30_000, n_intervals=0),
 
         # Polls range-loading progress only while a Watch request is active.
         dcc.Interval(
@@ -226,6 +245,7 @@ register_callbacks(
     TIMEFRAME_MAP,
     paper_trading_service=paper_trading_service,
     paper_state_cache=paper_state_cache,
+    market_calendar=market_calendar,
 )
 
 if __name__ == "__main__":

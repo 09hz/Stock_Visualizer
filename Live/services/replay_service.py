@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from threading import Lock
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
 
-from core.RealTime import RealTimeIB
 from core.ReplayModule import ReplayEngine
 from services.bar_store import BarStore
+from services.market_calendar_service import MarketCalendarService
+
+
+if TYPE_CHECKING:
+    from core.RealTime import RealTimeIB
 
 
 OHLCV_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
@@ -31,11 +35,6 @@ class ReplayService:
         exists. A previous bad partial cache, for example 12 bars under a
         ("MSFT", "1 min", "2026-06-18") key, is invalidated and refreshed.
     """
-
-    # A normal US regular session is about 390 one-minute bars.
-    # Keep this slightly below 390 so an occasional missing bar does not force
-    # endless refreshes. Adjust later if you add half-day calendar support.
-    MIN_HISTORICAL_1MIN_ROWS = 360
 
     # Keep replay datasets responsive while retaining the finest useful source
     # interval for the selected date range. Display intervals may resample this
@@ -108,13 +107,15 @@ class ReplayService:
 
     def __init__(
         self,
-        rt: RealTimeIB,
+        rt: "RealTimeIB",
         engine: ReplayEngine,
         bar_store: Optional[BarStore] = None,
+        market_calendar: Optional[MarketCalendarService] = None,
     ):
         self.rt = rt
         self.engine = engine
         self.bar_store = bar_store or BarStore()
+        self.market_calendar = market_calendar or MarketCalendarService()
         self.memory_cache: dict[tuple[str, str, str], pd.DataFrame] = {}
 
         self.current_symbol: Optional[str] = None
@@ -274,17 +275,15 @@ class ReplayService:
         return df
 
     def _session_bounds_for_date(self, replay_date) -> tuple[pd.Timestamp, pd.Timestamp]:
-        selected = pd.to_datetime(replay_date, errors="coerce")
+        selected = replay_date or self.market_calendar.last_completed_session()
+        session_start, session_end = self.market_calendar.session_bounds(selected)
 
-        if pd.isna(selected):
-            selected = pd.Timestamp.now()
-
-        selected = selected.normalize()
-
-        session_start = selected.replace(hour=9, minute=30, second=0, microsecond=0)
-        session_end = selected.replace(hour=16, minute=0, second=0, microsecond=0)
-
-        return session_start, session_end
+        # IB historical bars are normalized to exchange-local, timezone-naive
+        # timestamps throughout this project.
+        return (
+            pd.Timestamp(session_start).tz_localize(None),
+            pd.Timestamp(session_end).tz_localize(None),
+        )
 
     def _filter_regular_session(self, bars: pd.DataFrame | None, replay_date) -> pd.DataFrame:
         df = self._normalize_replay_bars(bars)
@@ -306,7 +305,7 @@ class ReplayService:
         if pd.isna(selected):
             return False
 
-        return selected.date() < pd.Timestamp.now().date()
+        return selected.date() < self.market_calendar.exchange_now().date()
 
     def _should_validate_full_session(
         self,
@@ -335,14 +334,20 @@ class ReplayService:
             (True, reason) if the cache is safe to use
             (False, reason) if it should be invalidated/refetched
         """
-        min_rows = int(min_rows or self.MIN_HISTORICAL_1MIN_ROWS)
-
         df = self._filter_regular_session(bars, replay_date)
 
         if df.empty:
             return False, "empty regular-session cache"
 
         session_start, session_end = self._session_bounds_for_date(replay_date)
+
+        if min_rows is None:
+            scheduled_minutes = max(
+                1,
+                int((session_end - session_start).total_seconds() // 60),
+            )
+            min_rows = max(1, scheduled_minutes - 30)
+        min_rows = int(min_rows)
 
         first_time = df["time"].min()
         last_time = df["time"].max()
@@ -399,7 +404,7 @@ class ReplayService:
 
             start_dt = start_ts.normalize().to_pydatetime()
 
-            today = datetime.now().date()
+            today = self.market_calendar.exchange_now().date()
             if start_dt.date() > today:
                 raise ValueError("Replay date cannot be in the future.")
 
@@ -648,20 +653,24 @@ class ReplayService:
         if end < start:
             start, end = end, start
 
-        today = datetime.now().date()
-        if start.date() > today or end.date() > today:
+        exchange_today = self.market_calendar.exchange_now().date()
+        if start.date() > exchange_today or end.date() > exchange_today:
             raise ValueError("Replay date range cannot include future dates.")
 
-        days: list[str] = []
-        current = start.normalize()
+        last_completed = self.market_calendar.last_completed_session()
+        if end.date() > last_completed:
+            end = pd.Timestamp(last_completed)
 
-        while current <= end.normalize():
-            if int(current.weekday()) < 5:
-                days.append(current.date().isoformat())
-            current = current + pd.Timedelta(days=1)
+        if start.date() > last_completed:
+            raise ValueError(
+                "Replay requires a completed market session. "
+                f"The latest available session is {last_completed.isoformat()}."
+            )
+
+        days = self.market_calendar.sessions_in_range(start, end)
 
         if not days:
-            raise ValueError("No weekday trading days found in selected range.")
+            raise ValueError("No completed NYSE trading sessions found in selected range.")
 
         requested_timeframe = str(timeframe or "auto").lower().strip()
 
@@ -691,11 +700,9 @@ class ReplayService:
             daily = self._normalize_replay_bars(daily)
 
             if not daily.empty:
-                daily_dates = daily["time"].dt.normalize()
+                daily_dates = daily["time"].dt.date.astype(str)
                 daily = daily[
-                    (daily_dates >= start.normalize())
-                    & (daily_dates <= end.normalize())
-                    & (daily["time"].dt.weekday < 5)
+                    daily_dates.isin(days)
                 ].copy()
                 daily = (
                     daily.sort_values("time")
@@ -847,6 +854,31 @@ class ReplayService:
 
         symbol = self.rt._sanitize_symbol(symbol)
         timeframe = timeframe or "1 min"
+        requested_replay_date = replay_date
+        adjustment = ""
+
+        if replay_date:
+            selected = pd.to_datetime(replay_date, errors="coerce")
+            if pd.isna(selected):
+                raise ValueError(f"Invalid replay date: {replay_date}")
+
+            exchange_today = self.market_calendar.exchange_now().date()
+            if selected.date() > exchange_today:
+                raise ValueError("Replay date cannot be in the future.")
+
+            last_completed = self.market_calendar.last_completed_session()
+            if selected.date() == exchange_today and selected.date() != last_completed:
+                replay_date = last_completed.isoformat()
+            elif not self.market_calendar.is_session(selected.date()):
+                replay_date = self.market_calendar.session_on_or_before(
+                    selected.date()
+                ).isoformat()
+
+            if replay_date != requested_replay_date:
+                adjustment = (
+                    f" Requested {requested_replay_date}; using last completed "
+                    f"session {replay_date}."
+                )
 
         hist = self.get_history(
             symbol=symbol,
@@ -868,7 +900,10 @@ class ReplayService:
                 self.engine.set_speed(speed)
 
             date_label = replay_date or "latest"
-            return f"No replay history returned for {symbol} ({timeframe}, {date_label})", {
+            return (
+                f"No replay history returned for {symbol} "
+                f"({timeframe}, {date_label}).{adjustment}"
+            ), {
                 "playing": False,
                 "speed": self.engine.speed,
                 "current_index": 1,
@@ -889,7 +924,8 @@ class ReplayService:
 
         date_label = replay_date or "latest"
         return (
-            f"Replay loaded for {symbol} ({timeframe}, {date_label}, {len(hist)} bars){warning}",
+            f"Replay loaded for {symbol} ({timeframe}, {date_label}, "
+            f"{len(hist)} bars){warning}.{adjustment}",
             self.engine.info(),
         )
 

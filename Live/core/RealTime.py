@@ -171,6 +171,12 @@ class RealTimeIB:
     # ------------------------------------------------------------------
     # IB thread lifecycle
     # ------------------------------------------------------------------
+    def is_connected(self) -> bool:
+        try:
+            return bool(self.ib.isConnected())
+        except Exception:
+            return False
+
     def connect(self) -> None:
         """
         Connect on the current thread.

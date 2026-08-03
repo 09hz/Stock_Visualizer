@@ -294,23 +294,6 @@ def _apply_chart_view(fig, bars: pd.DataFrame, chart_state: dict | None, default
     fig = _fit_y_axis_to_visible_bars(fig, bars, x_range)
     return fig
 
-def _is_today_or_latest_replay_date(replay_date) -> bool:
-    """
-    Live market paper trading should only be available when the Watch tab
-    is using today's date or no date/latest mode.
-    """
-    if not replay_date:
-        return True
-
-    try:
-        selected = pd.to_datetime(replay_date, errors="coerce")
-        if pd.isna(selected):
-            return False
-
-        return selected.date() == datetime.now().date()
-    except Exception:
-        return False
-
 def _default_chart_state(range_key="1D"):
     return {
         "mode": "live",
@@ -327,7 +310,9 @@ def register_callbacks(
         timeframe_map,
         paper_trading_service=None,
         paper_state_cache=None,
+        market_calendar=None,
 ):
+    market_calendar = market_calendar or replay_service.market_calendar
     strategy_engine = StrategyEngine()
     strategy_overlay_service = StrategyOverlayService()
     bar_view_service = BarViewService()
@@ -343,25 +328,47 @@ def register_callbacks(
     # Strategy overlays are cached by StrategyOverlayService.
 
     def _trading_days_between(start_date, end_date):
-        start = pd.to_datetime(start_date, errors="coerce")
-        end = pd.to_datetime(end_date, errors="coerce")
+        try:
+            start = pd.to_datetime(start_date, errors="coerce")
+            end = pd.to_datetime(end_date, errors="coerce")
+            if pd.isna(start) or pd.isna(end):
+                return []
 
-        if pd.isna(start) or pd.isna(end):
+            if end < start:
+                start, end = end, start
+
+            last_completed = market_calendar.last_completed_session()
+            if end.date() > last_completed:
+                end = pd.Timestamp(last_completed)
+            if start.date() > last_completed:
+                return []
+            return market_calendar.sessions_in_range(start, end)
+        except Exception:
             return []
 
-        if end < start:
-            start, end = end, start
+    def _live_market_access():
+        allowed, message, market_status = market_calendar.live_access()
+        if allowed and not rt.is_connected():
+            return (
+                False,
+                "Live Market is unavailable because IBKR is disconnected.",
+                market_status,
+            )
+        return allowed, message, market_status
 
-        days = []
-        current = start.normalize()
+    def _is_live_market_available() -> bool:
+        allowed, _message, _status = _live_market_access()
+        return bool(allowed)
 
-        while current <= end.normalize():
-            if int(current.weekday()) < 5:
-                days.append(current.date().isoformat())
-
-            current = current + pd.Timedelta(days=1)
-
-        return days
+    @app.callback(
+        Output("replay-date", "max_date_allowed"),
+        Output("replay-end-date", "max_date_allowed"),
+        Input("market-status-interval", "n_intervals"),
+        prevent_initial_call=False,
+    )
+    def sync_latest_completed_replay_date(_market_tick):
+        latest_session = market_calendar.last_completed_session().isoformat()
+        return latest_session, latest_session
 
     def _strategy_docs_dir() -> Path:
         return Path(__file__).resolve().parent / "docs"
@@ -688,7 +695,7 @@ def register_callbacks(
                 if not trading_days:
                     render_trigger = int(render_trigger or 0) + 1
                     return (
-                        "No weekday trading days found in selected replay range.",
+                        "No completed NYSE sessions found in selected replay range.",
                         100,
                         1,
                         "watch-loading-overlay hidden",
@@ -742,7 +749,7 @@ def register_callbacks(
                 return (
                     (
                         f"Loaded {symbol} replay range {replay_date} → {replay_end_date} · "
-                        f"{len(trading_days)} weekdays requested · {len(stitched):,} source bars · "
+                        f"{len(trading_days)} market sessions · {len(stitched):,} source bars · "
                         f"source {replay_service.current_timeframe} · display {display_timeframe}."
                     ),
                     max_idx,
@@ -2133,7 +2140,7 @@ def register_callbacks(
         Input("ui-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         prevent_initial_call=True,
     )
@@ -2170,7 +2177,7 @@ def register_callbacks(
 
             use_live_watch_data = (
                     price_source == "live"
-                    and _is_today_or_latest_replay_date(replay_date)
+                    and _is_live_market_available()
             )
             try:
                 replay_info_for_render = replay_service.info()
@@ -2414,7 +2421,7 @@ def register_callbacks(
         Input("ui-interval", "n_intervals"),
         State("main-tabs", "value"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         prevent_initial_call=True,
     )
@@ -2439,7 +2446,7 @@ def register_callbacks(
 
             use_live_watch_data = (
                     price_source == "live"
-                    and _is_today_or_latest_replay_date(replay_date)
+                    and _is_live_market_available()
             )
 
             watch_view = bar_view_service.build_watch_view(
@@ -2567,11 +2574,12 @@ def register_callbacks(
             return None, datetime.now(), "Replay Cursor"
 
         if source == "live":
-            if not _is_today_or_latest_replay_date(replay_date):
+            live_allowed, live_message, _market_status = _live_market_access()
+            if not live_allowed:
                 return (
                     None,
                     datetime.now(),
-                    "Live Market unavailable for historical dates",
+                    live_message,
                 )
 
             try:
@@ -2583,6 +2591,13 @@ def register_callbacks(
 
             if snap.last is None:
                 return None, snap.updated_at or datetime.now(), "Live Market"
+
+            if not market_calendar.is_quote_fresh(snap.updated_at, max_age_seconds=60):
+                return (
+                    None,
+                    snap.updated_at or datetime.now(),
+                    "Live Market quote is stale; wait for a fresh tick",
+                )
 
             return float(snap.last), snap.updated_at or datetime.now(), "Live Market"
 
@@ -2817,23 +2832,59 @@ def register_callbacks(
         )
 
     @app.callback(
+        Output("paper-price-source", "options"),
+        Output("paper-price-source", "value"),
+        Output("watch-market-status", "children"),
+        Input("market-status-interval", "n_intervals"),
+        Input("main-tabs", "value"),
+        State("paper-price-source", "value"),
+        prevent_initial_call=False,
+    )
+    def sync_live_market_guard(_market_tick, active_tab, current_source):
+        if active_tab != "watch":
+            return no_update, no_update, no_update
+
+        live_allowed, live_message, market_status = _live_market_access()
+        options = [
+            {"label": "Replay", "value": "replay"},
+            {
+                "label": "Live" if live_allowed else "Live (Market Closed)",
+                "value": "live",
+                "disabled": not live_allowed,
+            },
+        ]
+        selected = str(current_source or "replay").lower().strip()
+        if selected == "live" and not live_allowed:
+            selected = "replay"
+
+        if live_allowed:
+            banner = "NYSE market open · Live and Replay modes are available."
+        else:
+            replay_day = market_status.last_completed_session.strftime("%A, %b %d")
+            banner = f"{live_message} Showing Replay for {replay_day}."
+
+        return options, selected, banner
+
+    @app.callback(
         Output("paper-trade-status", "children", allow_duplicate=True),
         Input("paper-price-source", "value"),
-        Input("replay-date", "date"),
+        Input("market-status-interval", "n_intervals"),
         State("main-tabs", "value"),
         prevent_initial_call=True,
     )
-    def warn_live_source_for_historical_date(price_source, replay_date, active_tab):
+    def describe_live_market_guard(price_source, _market_tick, active_tab):
         if active_tab != "watch":
             return no_update
 
-        if price_source == "live" and not _is_today_or_latest_replay_date(replay_date):
-            return "Live Market paper trading is only available for today's date or latest mode."
+        live_allowed, live_message, market_status = _live_market_access()
+        if price_source == "live" and live_allowed:
+            return "Live Market paper trading enabled for the open NYSE session."
 
-        if price_source == "live":
-            return "Live Market paper trading enabled for today's/current data."
+        if not live_allowed:
+            replay_day = market_status.last_completed_session.strftime("%A, %b %d")
+            return f"{live_message} Replay is available for {replay_day}."
 
-        return "Replay Cursor paper trading enabled."
+        return "Replay Cursor paper trading enabled. Live Market is also available."
 
 
     @app.callback(
@@ -2845,7 +2896,7 @@ def register_callbacks(
         Input("replay-render-trigger", "data"),
         Input("ui-interval", "n_intervals"),
         State("watch-symbol-dropdown", "value"),
-        State("paper-price-source", "value"),
+        Input("paper-price-source", "value"),
         State("replay-date", "date"),
         State("main-tabs", "value"),
         prevent_initial_call=False,
